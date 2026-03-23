@@ -19,6 +19,48 @@
 
 ---
 
+## Architecture
+
+```
+           Entry Points
+┌────────────────┐ ┌────────────────┐ ┌────────────────┐
+│   Next.js      │ │   Telegram     │ │  Vercel Cron   │
+│   Chat UI      │ │   Webhook      │ │  (scheduled)   │
+│                │ │  (optional)    │ │  (optional)    │
+└───────┬────────┘ └───────┬────────┘ └───────┬────────┘
+        │                  │                  │
+        └──────────────────┼──────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────┐
+│                   Your Agent (Next.js API Route)             │
+│           built with AI SDK: streamText · tool calling       │
+└──────────┬──────────────────────────────┬────────────────────┘
+           │                              │
+           ▼                              ▼
+┌─────────────────────────┐    ┌────────────────────────────────┐
+│   Vercel AI Gateway     │    │        Composio                │
+│  OpenAI · Anthropic     │    │  One-click OAuth · token mgmt  │
+│  Google · xAI · etc.    │    │                                │
+│  $5/mo free credits     │    │  Gmail · Slack · Notion        │
+│                         │    │  Calendar · CRM · 1000+        │
+└─────────────────────────┘    └────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│                    Optional Extensions                       │
+│  Supermemory (long-term memory · wraps the LLM as middleware)│
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│                      Infrastructure                          │
+│          Neon Postgres  ·  Vercel Blob  ·  Auth.js           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Your agent** lives in a Next.js API route, built with the **AI SDK** (an open-source TypeScript library for streaming, tool calling, and model routing). **Next.js** is the default chat UI, with **Telegram** and **Vercel Cron** as optional entry points — same agent, different trigger. **Composio** provides tools for external apps (Gmail, Slack, etc.) that merge into the agent's tool loop at runtime. **Vercel AI Gateway** routes to any model provider with free monthly credits. **Supermemory** optionally wraps the model so the agent remembers past conversations across sessions.
+
+---
+
 ## Tutorial
 
 ### Part 1: Setup Vercel AI SDK Template
