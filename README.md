@@ -1,20 +1,204 @@
-<a href="https://chat.vercel.ai/">
-  <img alt="Chatbot" src="app/(chat)/opengraph-image.png">
-  <h1 align="center">Chatbot</h1>
-</a>
+<h1 align="center">Build Your Own AI Agent with Composio + Vercel AI SDK</h1>
 
 <p align="center">
-    Chatbot (formerly AI Chatbot) is a free, open-source template built with Next.js and the AI SDK that helps you quickly build powerful chatbot applications.
+  Turn the Vercel AI SDK chatbot template into a full AI agent that controls Gmail, Slack, Notion, Calendar, and 1000+ other tools — powered by <a href="https://composio.dev">Composio</a>.
 </p>
 
 <p align="center">
-  <a href="https://chatbot.dev"><strong>Read Docs</strong></a> ·
+  <img src="public/automate customer dispute (Slack, Notion, Gmail) - -- TRIPLE FAST, 50FPS, 1080P.gif" alt="Demo: AI agent resolving a customer dispute across Slack, Notion, and Gmail" width="720" />
+</p>
+
+<p align="center">
+  <a href="#tutorial"><strong>Tutorial</strong></a> ·
+  <a href="#agent-ready-prompts"><strong>Agent-Ready Prompts</strong></a> ·
   <a href="#features"><strong>Features</strong></a> ·
-  <a href="#model-providers"><strong>Model Providers</strong></a> ·
   <a href="#deploy-your-own"><strong>Deploy Your Own</strong></a> ·
   <a href="#running-locally"><strong>Running locally</strong></a>
 </p>
 <br/>
+
+---
+
+## Tutorial
+
+### Part 1: Setup Vercel AI SDK Template
+
+Deploy the chatbot template and run it locally. Out of the box you get a working chatbot with built-in tools (weather, documents, code sandbox) and access to multiple LLMs through the Vercel AI Gateway.
+
+1. 1-Click Deploy the Vercel AI SDK's "Chatbot" template
+2. Clone locally and run in your editor (Cursor, Claude Code, etc.)
+3. Test built-in tools to see how tool calling works
+
+### Part 2: Add Composio — Turn Your Chatbot Into an Agent
+
+Technically Part 1 is already an agent — it can call tools and use the results. But its tools only work *inside the app*. It can write a document or check the weather, but it can't touch your Gmail, your calendar, or your CRM.
+
+In Part 2, we plug in Composio so the agent can reach out and actually do things in the real apps you use every day. We only **augment the tool layer** — the chat UI, streaming flow, and server route all stay the same.
+
+1. Install Composio: `pnpm add @composio/core @composio/vercel`
+2. Grab your free API key from [composio.dev](https://composio.dev)
+3. Paste the agent-ready setup prompt (below) into your AI editor — it handles the refactor
+4. Add the UI fallback for dynamic tools and the Anthropic tool-call ID fix (prompts below)
+5. Prompt your agent and authorize apps when it asks (one-click OAuth)
+
+### Part 3: Deploy with Auth + Composio
+
+Move from a hardcoded demo user to real per-user identity so every authenticated user gets their own connected accounts.
+
+1. Set `AUTH_SECRET` in Vercel environment variables
+2. Paste the auth-ready prompt (below) into your AI editor
+3. Deploy to Vercel
+4. Verify: logged-in users can connect external apps, guest users get local tools only
+
+### Part 4: Cron — Scheduled Agent Tasks
+
+> *Coming soon*
+
+### Part 5: Telegram Bot
+
+> *Coming soon*
+
+### Part 6: Supermemory — Long-Term Agent Memory
+
+> *Coming soon*
+
+---
+
+## Agent-Ready Prompts
+
+Copy these into your AI editor (Cursor, Claude Code, Windsurf, etc.) to set up each part.
+
+### Prompt: Add Composio to Chat Route
+
+```
+Given this example from Composio, adapt my Chatbot tools to use Composio.
+
+Special Notes:
+- Hardcode the user ID for now
+- Assume my .env.local already has the Composio API key.
+```
+
+### Prompt: Dynamic Tool UI Fallback
+
+Add this block to `components/chat/message.tsx` as a fallback renderer for any `tool-*` types that don't have a custom component (Composio introduces many dynamic tool names):
+
+```tsx
+if (type.startsWith("tool-")) {
+  const { toolCallId, state } = part as {
+    toolCallId: string;
+    state: string;
+  };
+  const input = "input" in part ? part.input : undefined;
+  const output = "output" in part ? part.output : undefined;
+  const errorText =
+    "errorText" in part ? (part.errorText as string) : undefined;
+
+  return (
+    <Tool className="w-[min(100%,450px)]" defaultOpen={false} key={toolCallId}>
+      <ToolHeader state={state as any} type={type as any} />
+      <ToolContent>
+        {input && <ToolInput input={input} />}
+        {(state === "output-available" || state === "output-error") && (
+          <ToolOutput
+            errorText={errorText}
+            output={
+              output ? (
+                <pre className="overflow-x-auto p-3 font-mono text-xs">
+                  {JSON.stringify(output, null, 2)}
+                </pre>
+              ) : undefined
+            }
+          />
+        )}
+      </ToolContent>
+    </Tool>
+  );
+}
+```
+
+In `components/ai-elements/tool.tsx`, the label cleanup is already handled:
+
+```ts
+type === "dynamic-tool" ? toolName : type.replace(/^tool-/, "");
+```
+
+### Prompt: Anthropic Tool Call ID Fix
+
+Composio generates tool call IDs with characters that Anthropic rejects. Add this to `app/(chat)/api/chat/route.ts`:
+
+```ts
+const TOOL_ID_INVALID_CHARS = /[^a-zA-Z0-9_-]/g;
+
+function sanitizeToolCallIds(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    parts: message.parts.map((part) => {
+      if (
+        "toolCallId" in part &&
+        typeof part.toolCallId === "string" &&
+        part.toolCallId.length > 0
+      ) {
+        return {
+          ...part,
+          toolCallId: part.toolCallId.replace(TOOL_ID_INVALID_CHARS, "_"),
+        };
+      }
+      return part;
+    }),
+  }));
+}
+```
+
+Then use it when converting messages:
+
+```ts
+const modelMessages = await convertToModelMessages(
+  sanitizeToolCallIds(uiMessages)
+);
+```
+
+### Prompt: Production-Ready Auth
+
+```
+## What we're doing now
+
+- We are moving from **demo identity** to **real per-user identity**.
+- No hardcoded Composio user id anymore.
+- Composio should use the logged-in app user (`session.user.id`).
+- Keep auth flow **inline in chat** for now (no extra connect button/endpoints yet).
+- Guest users should **not** connect/use Composio accounts.
+
+## What we are not doing now
+
+- No manual `manageConnections: false` flow yet.
+- No custom callback route yet.
+- No extra UI for connect/disconnect.
+- No multi-account switching yet.
+
+---
+
+## Implementation Plan (small + safe)
+
+1. Update `app/(chat)/api/chat/route.ts`
+   - Remove hardcoded `COMPOSIO_EXTERNAL_USER_ID`.
+   - Use `session.user.id` when creating Composio session.
+
+2. Enforce guest restriction
+   - If `session.user.type === "guest"`, do not inject Composio tools.
+   - Continue with local tools only.
+
+3. Keep current tool loop behavior
+   - Keep merged tools pattern and fallback behavior.
+   - If Composio init fails, log and continue local tools (no app crash).
+
+4. Verify
+   - Regular user: sees inline auth prompt when Gmail not connected.
+   - Guest user: no Composio tool usage.
+   - Chat streaming and existing tools still work.
+   - Lint/type check clean.
+```
+
+---
 
 ## Features
 
@@ -25,6 +209,9 @@
   - Unified API for generating text, structured objects, and tool calls with LLMs
   - Hooks for building dynamic chat and generative user interfaces
   - Supports OpenAI, Anthropic, Google, xAI, and other model providers via AI Gateway
+- [Composio](https://composio.dev)
+  - One-click OAuth to connect Gmail, Slack, Notion, Calendar, CRM, and 1000+ tools
+  - Handles token refresh, API edge cases, and auth infrastructure
 - [shadcn/ui](https://ui.shadcn.com)
   - Styling with [Tailwind CSS](https://tailwindcss.com)
   - Component primitives from [Radix UI](https://radix-ui.com) for accessibility and flexibility
