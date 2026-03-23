@@ -81,7 +81,7 @@ export const ToolHeader = ({
   ...props
 }: ToolHeaderProps) => {
   const derivedName =
-    type === "dynamic-tool" ? toolName : type.split("-").slice(1).join("-");
+    type === "dynamic-tool" ? toolName : type.replace(/^tool-/, "");
 
   return (
     <CollapsibleTrigger

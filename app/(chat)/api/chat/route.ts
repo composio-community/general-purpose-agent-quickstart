@@ -6,6 +6,7 @@ import {
   generateId,
   stepCountIs,
   streamText,
+  type ToolSet,
 } from "ai";
 import { checkBotId } from "botid/server";
 import { after } from "next/server";
@@ -39,6 +40,8 @@ import {
 } from "@/lib/db/queries";
 import type { DBMessage } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
+import { Composio } from "@composio/core";
+import { VercelProvider } from "@composio/vercel";
 import { checkIpRateLimit } from "@/lib/ratelimit";
 import type { ChatMessage } from "@/lib/types";
 import { convertToUIMessages, generateUUID } from "@/lib/utils";
@@ -46,6 +49,32 @@ import { generateTitleFromUserMessage } from "../../actions";
 import { type PostRequestBody, postRequestBodySchema } from "./schema";
 
 export const maxDuration = 60;
+
+
+// When using Model = Sonnet 4.6 we get a bug: ""
+// Composio generates tool call IDs that can contain characters outside the
+// pattern Anthropic (and some other providers) require: ^[a-zA-Z0-9_-]+$
+// We sanitize all toolCallIds in message history before sending to the model.
+const TOOL_ID_INVALID_CHARS = /[^a-zA-Z0-9_-]/g;
+
+function sanitizeToolCallIds(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    parts: message.parts.map((part) => {
+      if (
+        "toolCallId" in part &&
+        typeof part.toolCallId === "string" &&
+        part.toolCallId.length > 0
+      ) {
+        return {
+          ...part,
+          toolCallId: part.toolCallId.replace(TOOL_ID_INVALID_CHARS, "_"),
+        };
+      }
+      return part;
+    }),
+  }));
+}
 
 function getStreamContext() {
   try {
@@ -186,26 +215,57 @@ export async function POST(request: Request) {
     const isReasoningModel = capabilities?.reasoning === true;
     const supportsTools = capabilities?.tools === true;
 
-    const modelMessages = await convertToModelMessages(uiMessages);
+    const modelMessages = await convertToModelMessages(
+      sanitizeToolCallIds(uiMessages)
+    );
 
     const stream = createUIMessageStream({
       originalMessages: isToolApprovalFlow ? uiMessages : undefined,
       execute: async ({ writer: dataStream }) => {
+        const localTools = {
+          getWeather,
+          createDocument: createDocument({
+            session,
+            dataStream,
+            modelId: chatModel,
+          }),
+          editDocument: editDocument({ dataStream, session }),
+          updateDocument: updateDocument({
+            session,
+            dataStream,
+            modelId: chatModel,
+          }),
+          requestSuggestions: requestSuggestions({
+            session,
+            dataStream,
+            modelId: chatModel,
+          }),
+        };
+
+        let composioTools: ToolSet = {};
+
+        if (process.env.COMPOSIO_API_KEY && session.user.type !== "guest") {
+          try {
+            const composio = new Composio({ provider: new VercelProvider() });
+            const composioSession = await composio.create(session.user.id);
+            composioTools = (await composioSession.tools()) as unknown as ToolSet;
+          } catch (error) {
+            console.error("Composio tool initialization failed:", error);
+          }
+        }
+
+        const tools = {
+          ...localTools,
+          ...composioTools,
+        };
         const result = streamText({
           model: getLanguageModel(chatModel),
           system: systemPrompt({ requestHints, supportsTools }),
           messages: modelMessages,
           stopWhen: stepCountIs(5),
-          experimental_activeTools:
-            isReasoningModel && !supportsTools
-              ? []
-              : [
-                  "getWeather",
-                  "createDocument",
-                  "editDocument",
-                  "updateDocument",
-                  "requestSuggestions",
-                ],
+          ...(isReasoningModel && !supportsTools
+            ? { experimental_activeTools: [] }
+            : {}),
           providerOptions: {
             ...(modelConfig?.gatewayOrder && {
               gateway: { order: modelConfig.gatewayOrder },
@@ -214,25 +274,7 @@ export async function POST(request: Request) {
               openai: { reasoningEffort: modelConfig.reasoningEffort },
             }),
           },
-          tools: {
-            getWeather,
-            createDocument: createDocument({
-              session,
-              dataStream,
-              modelId: chatModel,
-            }),
-            editDocument: editDocument({ dataStream, session }),
-            updateDocument: updateDocument({
-              session,
-              dataStream,
-              modelId: chatModel,
-            }),
-            requestSuggestions: requestSuggestions({
-              session,
-              dataStream,
-              modelId: chatModel,
-            }),
-          },
+          tools,
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,
             functionId: "stream-text",

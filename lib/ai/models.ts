@@ -60,6 +60,13 @@ export const chatModels: ChatModel[] = [
     gatewayOrder: ["fireworks", "bedrock"],
   },
   {
+    id: "anthropic/claude-sonnet-4.6",
+    name: "Claude Sonnet 4.6",
+    provider: "anthropic",
+    description: "Strong general model for tool use and reasoning",
+    gatewayOrder: ["anthropic", "bedrock"],
+  },
+  {
     id: "openai/gpt-oss-20b",
     name: "GPT OSS 20B",
     provider: "openai",
