@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/banner.png" alt="Banner" />
+</p>
+
 <h1 align="center">Build Your Own OpenClaw from Scratch with Composio, Vercel AI SDK, Telegram, and Supermemory</h1>
 
 <p align="center">
