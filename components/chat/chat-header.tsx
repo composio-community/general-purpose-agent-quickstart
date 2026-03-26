@@ -10,7 +10,7 @@ import { VercelIcon } from "./icons";
 import { VisibilitySelector, type VisibilityType } from "./visibility-selector";
 
 const composioLogoSrc = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/composio-logo.svg`;
-const composioHref = "https://composio.org";
+const composioHref = "https://composio.dev";
 
 function PureChatHeader({
   chatId,
