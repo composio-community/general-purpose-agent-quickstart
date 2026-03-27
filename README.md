@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  Start from the <a href="https://vercel.com/templates/next.js/chatbot">Vercel AI SDK Chatbot template</a>, follow the prompts below, and end up with the finished agent on the <code>main</code> branch of this repo — an AI agent that controls Gmail, Slack, Notion, Calendar, and 1000+ tools via <a href="https://composio.dev">Composio</a>.
+  Start from the <a href="https://vercel.com/templates/next.js/chatbot">Vercel AI SDK Chatbot template</a>, follow the prompts below, and end up with the finished agent on the <code>main</code> branch of this repo — an AI agent that controls Gmail, Slack, Notion, Calendar, and 1000+ tools via <a href="https://composio.dev?utm_source=general-purpose-agent-quickstart&utm_medium=github">Composio</a>.
 </p>
 
 <p align="center">
