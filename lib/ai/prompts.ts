@@ -1,4 +1,3 @@
-import type { Geo } from "@vercel/functions";
 import type { ArtifactKind } from "@/components/chat/artifact";
 
 export const artifactsPrompt = `
@@ -102,41 +101,23 @@ Memory (Supermemory):
 - Before answering questions about the user (name, preferences, prior facts, projects), call \`searchMemories\` or \`getProfile\` first.
 - If memory has nothing relevant, say so plainly and ask.`;
 
-export type RequestHints = {
-  latitude: Geo["latitude"];
-  longitude: Geo["longitude"];
-  city: Geo["city"];
-  country: Geo["country"];
-};
-
-export const getRequestPromptFromHints = (requestHints: RequestHints) => `\
-About the origin of user's request:
-- lat: ${requestHints.latitude}
-- lon: ${requestHints.longitude}
-- city: ${requestHints.city}
-- country: ${requestHints.country}
-`;
-
 export const systemPrompt = ({
-  requestHints,
   supportsTools,
   soul,
   needsOnboarding = false,
 }: {
-  requestHints: RequestHints;
   supportsTools: boolean;
   soul?: string | null;
   needsOnboarding?: boolean;
 }) => {
-  const requestPrompt = getRequestPromptFromHints(requestHints);
   const soulBlock = buildSoulPrompt(soul);
   const onboardingBlock = needsOnboarding ? `${ONBOARDING_PROMPT}\n\n` : "";
 
   if (!supportsTools) {
-    return `${onboardingBlock}${soulBlock}\n\n${regularPrompt}\n\n${requestPrompt}`;
+    return `${onboardingBlock}${soulBlock}\n\n${regularPrompt}`;
   }
 
-  return `${onboardingBlock}${soulBlock}\n\n${regularPrompt}\n\n${requestPrompt}\n\n${artifactsPrompt}`;
+  return `${onboardingBlock}${soulBlock}\n\n${regularPrompt}\n\n${artifactsPrompt}`;
 };
 
 export const codePrompt = `

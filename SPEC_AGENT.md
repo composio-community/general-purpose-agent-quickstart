@@ -10,9 +10,9 @@ This file is the canonical reference for how the system prompt is assembled and 
 
 ```
 SYSTEM PROMPT (per request, every channel)
-├── 1. SOUL              who the agent is        ← User.soul (or DEFAULT_SOUL)
-├── 2. regularPrompt     tool/memory rules       ← constant in code
-├── 3. requestHints      geo, time               ← from request
+├── 1. (ONBOARDING)      first-time setup        ← injected only when User.soul IS NULL
+├── 2. SOUL              who the agent is        ← User.soul (or DEFAULT_SOUL)
+├── 3. regularPrompt     tool/memory rules       ← constant in code
 ├── 4. artifactsPrompt   doc/sheet/code rules    ← web only
 └── 5. (channel-specific brevity rule, if any)
 
@@ -189,17 +189,19 @@ export function buildSoulPrompt(soul: string | null | undefined): string {
 
 export const regularPrompt = `... Memory rules ...`; // tool-use directives
 
-export const systemPrompt = ({ requestHints, supportsTools, soul }) => {
+export const systemPrompt = ({ supportsTools, soul, needsOnboarding }) => {
   return [
-    buildSoulPrompt(soul),         // 1. soul
-    regularPrompt,                 // 2. base + memory rules
-    getRequestPromptFromHints(...) // 3. geo
-    artifactsPrompt,               // 4. web-only docs/sheets
-  ].join("\n\n");
+    needsOnboarding ? ONBOARDING_PROMPT : "",  // 1. onboarding (only if soul null)
+    buildSoulPrompt(soul),                     // 2. soul
+    regularPrompt,                             // 3. base + memory rules
+    supportsTools ? artifactsPrompt : "",      // 4. web-only docs/sheets
+  ].filter(Boolean).join("\n\n");
 };
 ```
 
-Telegram doesn't go through `systemPrompt()` (no artifacts, no `requestHints`). It hand-assembles `${soul}\n\n${regularPrompt}\n\n${telegramBrevityRule}` instead — same first two layers, channel-specific tail.
+Telegram doesn't go through `systemPrompt()` (no artifacts). It hand-assembles `${onboardingBlock}${soul}\n\n${regularPrompt}\n\n${telegramBrevityRule}` instead — same layering, channel-specific tail.
+
+**No geolocation in the system prompt.** The Vercel AI chatbot template ships with an IP-derived `requestHints` block (city, country, lat/lon) prepended to every system prompt. We removed it: it leaked into agent replies (e.g. baked into the soul during onboarding), it's privacy-creepy when users haven't shared their location, and tools that need it (e.g. `getWeather`) accept a city name and geocode it themselves. Add geo back only if you have a concrete use for it (e.g. server-side rate-limit by region).
 
 ## API surface
 
