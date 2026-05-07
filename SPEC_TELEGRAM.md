@@ -63,8 +63,8 @@ User later in Telegram: *"what do you know about how I like replies?"* → agent
 - **Group chats.** Webhook handler explicitly filters `chat.type === "private"`. Anything else is dropped.
 - **File attachments / voice / images.** Only `message.text` is read.
 - **Streaming responses.** We use `generateText` (one-shot) because Telegram doesn't have a "typing partial token" UX. Each agent turn is a single Telegram message.
-- **Session memory across messages.** Each inbound message is a fresh agent turn — no message history. Pair with Supermemory if you want persistence (homework).
-- **Chat history into the web app sidebar.** Telegram messages don't persist into the `Chat` / `Message_v2` tables.
+- **Long-window context.** Working memory is capped at the last **10 turns** per `telegramChatId` (see "Working memory" below). Older context lives in Supermemory and is recalled on demand by the model. We do not implement TrustClaw-style compaction or staged summaries.
+- **Chat history into the web app sidebar.** Telegram messages persist in their own `TelegramTurn` table, *not* into `Chat` / `Message_v2`. The web sidebar still only shows web chats.
 
 ## ⚠️ Local dev caveats (read before testing)
 
@@ -235,24 +235,41 @@ Web app                                       Telegram
                                    │
                   (background, up to maxDuration)
                                    ▼
-                  ┌─────────────────────────────────┐
-                  │ runAgent(user, text):           │
-                  │                                 │
-                  │  composio.create(user.id)       │
-                  │   ↓                             │
-                  │  composioTools                  │
-                  │                                 │
-                  │  supermemoryTools(KEY, {        │
-                  │    containerTags: [user.id]     │
-                  │  })                             │
-                  │   ↓                             │
-                  │  memoryTools                    │
-                  │                                 │
-                  │  generateText({ tools: {...} }) │
-                  │   ↓                             │
-                  │  sendTelegramMessage(           │
-                  │    chat.id, reply)              │
-                  └─────────────────────────────────┘
+                  ┌──────────────────────────────────────┐
+                  │ runAgent(user, text):                │
+                  │                                      │
+                  │  ── load working memory ──           │
+                  │  getRecentTelegramTurns(             │
+                  │    chat.id, limit=10)                │
+                  │   ↓                                  │
+                  │  history (user/assistant rows)       │
+                  │                                      │
+                  │  ── append the new user turn ──      │
+                  │  appendTelegramTurn(role:"user")     │
+                  │                                      │
+                  │  ── identity & tools ──              │
+                  │  buildSoulPrompt(user.soul) ────┐    │
+                  │  composio.create(user.id) ──────┤    │
+                  │  supermemoryTools(KEY, {        │    │
+                  │    containerTags: [user.id]     │    │
+                  │  }) ────────────────────────────┤    │
+                  │                                 │    │
+                  │  ── one-shot model call ──      │    │
+                  │  generateText({                 │    │
+                  │    system: soul + regularPrompt │    │
+                  │           + telegram brevity,   │    │
+                  │    messages: [...history,       │    │
+                  │               { user, text }],  │    │
+                  │    tools                        │    │
+                  │  })                             │    │
+                  │   ↓                             │    │
+                  │  reply                          │    │
+                  │                                      │
+                  │  ── persist & deliver ──             │
+                  │  appendTelegramTurn(                 │
+                  │    role:"assistant", reply)          │
+                  │  sendTelegramMessage(chat.id, reply) │
+                  └──────────────────────────────────────┘
 ```
 
 ### Why this gives cross-channel memory automatically
@@ -285,6 +302,60 @@ Same `containerTags` → same memory bucket. The agent's memory tools read/write
    "what dietary restrictions do I have?"
 ```
 
+## Working memory (last 10 turns)
+
+Telegram delivers messages one at a time; without state, the model can't tell that "its sushi" is an answer to "what's your favourite food?" sent 3 seconds earlier. We fix that with a per-chat short-term log.
+
+### Schema
+
+```ts
+// lib/db/schema.ts
+export const telegramTurn = pgTable("TelegramTurn", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  telegramChatId: varchar("telegramChatId", { length: 64 }).notNull(),
+  role: varchar("role", { enum: ["user", "assistant"] }).notNull(),
+  content: text("content").notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+```
+
+Migration: `lib/db/migrations/0004_gigantic_kat_farrell.sql`. No FK to `User` — the `telegramChatId` is the identity key for unlinked chats too, and we want the rows to outlive an unlink/relink.
+
+### Per-turn flow
+
+For each inbound Telegram message:
+
+1. `getRecentTelegramTurns({ telegramChatId, limit: 10 })` — returns last 10 rows in chronological order.
+2. `appendTelegramTurn({ role: "user", content })` — record the new user message.
+3. Build `messages` array as `[...history, { role: "user", content: userMessage }]`.
+4. `generateText(...)` runs.
+5. `appendTelegramTurn({ role: "assistant", content: reply })` — record the reply.
+6. `sendTelegramMessage(...)` delivers it.
+
+### Three layers, in order
+
+This is the agent's full memory stack on Telegram. Same model as the web side, just different storage:
+
+| Layer | What it holds | Where | Lifetime | Loaded |
+|---|---|---|---|---|
+| **Soul** | Agent identity / voice / boundaries | `User.soul` (TEXT, editable at `/admin/agent`) — falls back to `DEFAULT_SOUL` | Set once, edited rarely | First section of every system prompt |
+| **Working memory** | Recent conversation context | `TelegramTurn` (web uses `Message_v2`) | Last 10 turns | Prepended to `messages` every call |
+| **Persistent memory** | Durable user facts ("I'm vegan", "my name is Shawn") | Supermemory, scoped by `containerTags: [userId]` | Forever | Tool-on-demand: model calls `searchMemories` / `getProfile` / `addMemory` when relevant |
+
+See `SPEC_AGENT.md` for how these compose.
+
+### Why a fixed count of 10 (not tokens)
+
+KISS. With Telegram's short replies and 200K-token context windows, 10 turns is far below any limit. If we ever raise it, switch to a token-budget cap and add the trim/compaction loop from TrustClaw (`/Users/shawnesquivel/GitHub/trustclaw/src/server/api/routers/trustclaw/agent/context/`).
+
+### What it doesn't do
+
+- **No cross-channel context bridging.** Web turns aren't loaded into Telegram's working memory and vice versa. That's intentional — they're separate conversations. Cross-channel learning happens at the **persistent** layer (Supermemory), not the working layer.
+- **No deletion / privacy controls.** Rows stay forever. Add a janitor cron later if needed.
+- **No order/time gap detection.** A user returning after 6 months gets the same "last 10 turns" as if they'd left for 6 minutes. The model will figure it out from the message timestamps in the conversation if it cares.
+
 ## Multi-tenant story (resolved)
 
 Earlier versions of this spec called this "homework." The build now does it properly.
@@ -309,8 +380,8 @@ Currently, Telegram messages don't appear in the web sidebar. To add (~30 lines)
 
 | File | Purpose |
 |---|---|
-| `lib/db/schema.ts` | `user` table gains `telegramChatId`, `telegramLinkToken`, `telegramLinkTokenExpiresAt` |
-| `lib/db/queries.ts` | `createTelegramLinkToken`, `getUserByTelegramChatId`, `getUserByTelegramLinkToken`, `linkTelegramToUser`, `unlinkTelegram`, `getTelegramLinkStatus` |
+| `lib/db/schema.ts` | `user` gains `telegramChatId`, `telegramLinkToken`, `telegramLinkTokenExpiresAt`, `soul`. New `telegramTurn` table (working memory). |
+| `lib/db/queries.ts` | Linking: `createTelegramLinkToken`, `getUserByTelegramChatId`, `getUserByTelegramLinkToken`, `linkTelegramToUser`, `unlinkTelegram`, `getTelegramLinkStatus`. Working memory: `appendTelegramTurn`, `getRecentTelegramTurns`. Soul: `getUserSoul`, `updateUserSoul`. |
 | `app/api/telegram/link/route.ts` | POST — auth, generate token, return `{ token, botUsername }` |
 | `app/api/telegram/unlink/route.ts` | POST — auth, clear `telegramChatId` |
 | `app/api/telegram/status/route.ts` | GET — auth, return `{ linked, telegramChatId? }` for poll |
@@ -319,7 +390,9 @@ Currently, Telegram messages don't appear in the web sidebar. To add (~30 lines)
 | `app/admin/telegram/link-button.tsx` | Client component for the linking flow |
 | `lib/telegram.ts` | Bot API helpers: `sendTelegramMessage`, `getWebhookInfo`, `setWebhook`, `deleteWebhook`, `getBotInfo` |
 | `app/telegram/page.tsx` | **Developer-only** webhook registration page (used during ngrok dev or first deploy) |
-| `app/(chat)/api/chat/route.ts` | Wires Supermemory tools with `containerTags: [user.id]` to match the Telegram side |
+| `app/(chat)/api/chat/route.ts` | Wires Supermemory tools with `containerTags: [user.id]` and loads `getUserSoul(userId)` into the system prompt — both sides of the agent share identity and memory. |
+| `app/admin/agent/page.tsx` + `soul-editor.tsx` | Per-user soul editor (textarea, max 4000 chars). See `SPEC_AGENT.md`. |
+| `app/api/agent/soul/route.ts` | GET/PATCH for the soul column. |
 
 ## Required env vars
 
@@ -365,7 +438,9 @@ These are the canonical sources we built against. Bookmark them.
 1. Create bot with [@BotFather](https://t.me/BotFather), copy token to `.env.local` as `TELEGRAM_BOT_TOKEN`.
 2. Generate a random `TELEGRAM_WEBHOOK_SECRET` (any string).
 3. Add `lib/telegram.ts` (Bot API client).
-4. Add `app/api/telegram-webhook/route.ts` (handler).
-5. Add `app/telegram/page.tsx` (admin UI).
-6. Restart `pnpm dev`, start `ngrok http 3000`, register webhook via `/telegram`.
-7. Send a test message from your phone.
+4. Add the linking schema (`telegramChatId`, `telegramLinkToken`, `telegramLinkTokenExpiresAt`) and the `TelegramTurn` working-memory table; run `pnpm db:generate && pnpm db:migrate`.
+5. Add `app/api/telegram-webhook/route.ts` (handler) — secret check, `/start <token>` linking branch, `appendTelegramTurn` + `getRecentTelegramTurns` for working memory, `composio.create(user.id)` + `supermemoryTools` for tools.
+6. Add `app/api/telegram/{link,unlink,status}/route.ts` and `app/admin/telegram/page.tsx` (per-user link UI).
+7. Add `app/telegram/page.tsx` (developer-only webhook registration UI).
+8. Restart `pnpm dev`, start `ngrok http 3000`, register webhook via `/telegram`.
+9. Send a test message from your phone.
