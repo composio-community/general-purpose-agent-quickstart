@@ -724,6 +724,135 @@ export async function deleteCronJob({
   }
 }
 
+export async function createTelegramLinkToken({
+  userId,
+  ttlMs = 10 * 60 * 1000,
+}: {
+  userId: string;
+  ttlMs?: number;
+}): Promise<string> {
+  const token = generateLinkToken();
+  const expiresAt = new Date(Date.now() + ttlMs);
+  try {
+    await db
+      .update(user)
+      .set({
+        telegramLinkToken: token,
+        telegramLinkTokenExpiresAt: expiresAt,
+      })
+      .where(eq(user.id, userId));
+    return token;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to create telegram link token"
+    );
+  }
+}
+
+export async function getUserByTelegramChatId({
+  telegramChatId,
+}: {
+  telegramChatId: string;
+}): Promise<User | null> {
+  try {
+    const [row] = await db
+      .select()
+      .from(user)
+      .where(eq(user.telegramChatId, telegramChatId))
+      .limit(1);
+    return row ?? null;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to look up user by telegram chat id"
+    );
+  }
+}
+
+export async function linkTelegramByToken({
+  token,
+  telegramChatId,
+}: {
+  token: string;
+  telegramChatId: string;
+}): Promise<User | null> {
+  try {
+    const now = new Date();
+    const result = await db
+      .update(user)
+      .set({
+        telegramChatId,
+        telegramLinkToken: null,
+        telegramLinkTokenExpiresAt: null,
+      })
+      .where(
+        and(
+          eq(user.telegramLinkToken, token),
+          gt(user.telegramLinkTokenExpiresAt, now)
+        )
+      )
+      .returning();
+    return result[0] ?? null;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to link telegram by token"
+    );
+  }
+}
+
+export async function unlinkTelegram({
+  userId,
+}: {
+  userId: string;
+}): Promise<void> {
+  try {
+    await db
+      .update(user)
+      .set({
+        telegramChatId: null,
+        telegramLinkToken: null,
+        telegramLinkTokenExpiresAt: null,
+      })
+      .where(eq(user.id, userId));
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to unlink telegram"
+    );
+  }
+}
+
+export async function getTelegramLinkStatus({
+  userId,
+}: {
+  userId: string;
+}): Promise<{ telegramChatId: string | null }> {
+  try {
+    const [row] = await db
+      .select({ telegramChatId: user.telegramChatId })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1);
+    return { telegramChatId: row?.telegramChatId ?? null };
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get telegram link status"
+    );
+  }
+}
+
+function generateLinkToken(): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let token = "";
+  for (let i = 0; i < 8; i++) {
+    token += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+  }
+  return token;
+}
+
 export async function getStreamIdsByChatId({ chatId }: { chatId: string }) {
   try {
     const streamIds = await db

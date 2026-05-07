@@ -19,6 +19,11 @@ export const user = pgTable("User", {
   emailVerified: boolean("emailVerified").notNull().default(false),
   image: text("image"),
   isAnonymous: boolean("isAnonymous").notNull().default(false),
+  telegramChatId: varchar("telegramChatId", { length: 64 }).unique(),
+  telegramLinkToken: varchar("telegramLinkToken", { length: 32 }).unique(),
+  telegramLinkTokenExpiresAt: timestamp("telegramLinkTokenExpiresAt", {
+    withTimezone: true,
+  }),
   createdAt: timestamp("createdAt").notNull().defaultNow(),
   updatedAt: timestamp("updatedAt").notNull().defaultNow(),
 });

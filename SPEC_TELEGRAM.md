@@ -2,24 +2,60 @@
 
 ## Goal
 
-Let users talk to the same agent from a Telegram chat. Inbound message → agent runs with Composio tools → reply delivered as a Telegram message. The agent can authorize Composio toolkits (Gmail, Calendar, etc.) inline by replying with the OAuth link.
+Let users talk to the same agent from a Telegram chat. Inbound message → agent runs with their Composio tools and shared memory → reply delivered as a Telegram message. **One Telegram bot serves all users of the app.** Users link their personal Telegram chat to their web account in one click, after which Telegram and the web app share the same identity, the same Composio connections, and the same memory.
 
-## Use case (validated demo)
+## TLDR — one bot for the whole app
 
-User in Telegram (`@myai_composio_bot`): *"fetch my latest emails"*
+```
+              ─── ONCE, BY YOU (the developer) ───
+              │                                  │
+              ▼                                  ▼
+        BotFather /newbot              Vercel env vars
+        → @your_app_bot                TELEGRAM_BOT_TOKEN=xxx
+                                       TELEGRAM_BOT_USERNAME=your_app_bot
+                                       TELEGRAM_WEBHOOK_SECRET=yyy
 
-Agent on first run (Gmail not connected for this Telegram chat) replies with a Composio OAuth URL. User clicks → grants Gmail access → returns to Telegram → re-asks → agent fetches emails and replies.
+              ─── PER USER, FOREVER ───
+              │
+              ▼
+        Web app → /admin/telegram → "Link Telegram"
+        Sends /start <code> to @your_app_bot
+        Done. ~10 seconds.
+```
 
-This proves the full pipeline: Telegram → webhook → secret check → background agent → Composio tools → reply back to Telegram.
+Users never see BotFather. They don't paste tokens. They just click a button.
 
-## In scope (v1)
+## Use cases (demo script)
 
-1. **Telegram bot** registered via [@BotFather](https://t.me/BotFather), token in `.env.local`.
-2. **Webhook handler** at `/api/telegram-webhook` — validates Telegram's `x-telegram-bot-api-secret-token` header, parses `update.message`, dispatches the agent in the background, and returns `{ok:true}` immediately.
-3. **`lib/telegram.ts`** — thin Telegram Bot API client: `sendTelegramMessage`, `getWebhookInfo`, `setWebhook`, `deleteWebhook`, `getBotInfo`.
-4. **`/telegram` admin page** — server component with server actions to inspect bot info, register/delete webhook, send a test message. Useful for tutorial walk-through and for re-registering after ngrok URL changes.
-5. **Per-Telegram-chat Composio identity** — `composio.create(chatId)` uses Telegram's `chat.id` as the Composio external user ID. Each Telegram chat is its own Composio user with its own connections.
-6. **Background execution via `after()`** — the webhook returns `200 OK` within milliseconds; the agent runs in `next/server` `after()` so we don't hit Telegram's strict response time limit and our request can take 30–120s.
+### 1. First-time link
+
+User logs into web app, visits `/admin/telegram`, clicks **Link Telegram** → page shows `/start ABC12345` and a link to `t.me/your_app_bot` → user clicks, Telegram opens with the command prefilled, sends it → bot replies "Linked!" and the web page flips to ✓ Linked.
+
+### 2. Cross-channel identity
+
+User in Telegram: *"fetch my latest emails"* — uses the **same Gmail connection** they previously authorized in the web app. No second OAuth.
+
+### 3. Cross-channel memory
+
+User in web chat: *"remember I prefer concise replies."* (memory tool fires, fact stored under `containerTags: [user.id]`)
+
+User later in Telegram: *"what do you know about how I like replies?"* → agent searches memory with the same `user.id` container → finds the fact → replies concisely.
+
+## In scope
+
+1. **Telegram bot** registered via [@BotFather](https://t.me/BotFather) **once** by the developer, token + username in env vars.
+2. **Webhook handler** at `/api/telegram-webhook` — validates `x-telegram-bot-api-secret-token`, parses `update.message`, special-cases `/start <token>` for linking, dispatches the agent in `after()` for regular messages, returns `{ok:true}` immediately.
+3. **`lib/telegram.ts`** — thin Bot API client: `sendTelegramMessage`, `getWebhookInfo`, `setWebhook`, `deleteWebhook`, `getBotInfo`.
+4. **`/telegram` admin page** — bot info, webhook registration UI (for ngrok rotation during dev).
+5. **`/admin/telegram` settings page** — per-user link/unlink UI for end users. This is what your customers see. Generates one-time link tokens, polls until linked.
+6. **Account linking schema** — three columns on `User`:
+   - `telegramChatId` (unique) — populated when linked
+   - `telegramLinkToken` (unique) — short-lived pairing code
+   - `telegramLinkTokenExpiresAt` — 10 min TTL
+7. **Cross-channel identity** — both web chat and Telegram webhook resolve to the same `user.id` and pass it to:
+   - `composio.create(user.id)` — same connections everywhere
+   - `supermemoryTools(KEY, { containerTags: [user.id] })` — same memory everywhere
+8. **Background execution via `after()`** — webhook returns 200 in <100ms; agent runs up to `maxDuration` seconds.
 
 ## Explicitly NOT in scope (v1)
 
@@ -123,121 +159,177 @@ After deploy:
 
 ## Architecture
 
+### Linking flow (one-time, per user)
+
 ```
-┌─────────────┐         POST /api/telegram-webhook
-│  Telegram   │  ─────────────────────────────────► ┌────────────────────┐
-│   user      │  with header                        │  Webhook handler   │
-└─────────────┘  x-telegram-bot-api-secret-token    │ (Next route)       │
-                                                    │                    │
-                                                    │ 1. timingSafeEqual │
-                                                    │    secret check    │
-                                                    │ 2. parse update    │
-                                                    │ 3. after(runAgent) │
-                                                    │ 4. return 200      │
-                                                    └─────────┬──────────┘
-                                                              │
-                              (background, up to maxDuration) │
-                                                              ▼
-                                                    ┌────────────────────┐
-                                                    │  runAgent(chatId,  │
-                                                    │           text)    │
-                                                    │                    │
-                                                    │ composio.create    │
-                                                    │   (chatId)         │
-                                                    │   .tools()         │
-                                                    │                    │
-                                                    │ generateText({...})│
-                                                    │                    │
-                                                    │ sendTelegram-      │
-                                                    │   Message(chatId,  │
-                                                    │   reply)           │
-                                                    └─────────┬──────────┘
-                                                              │
-                            POST /sendMessage to Bot API      │
-┌─────────────┐  ◄──────────────────────────────────────────┘
-│  Telegram   │  reply lands in user's chat
-│   user      │
-└─────────────┘
+Web app                                       Telegram
+─────────                                     ────────
+
+ ┌─ /admin/telegram ─────────────────────┐
+ │ User clicks [Link Telegram]           │
+ │  │                                    │
+ │  ▼                                    │
+ │ POST /api/telegram/link               │
+ │  - generates 8-char token             │
+ │  - UPDATE User SET                    │
+ │      telegramLinkToken = "ABC12345",  │
+ │      telegramLinkTokenExpiresAt =     │
+ │      now() + 10min                    │
+ │  - returns { token, botUsername }     │
+ │  │                                    │
+ │  ▼                                    │
+ │ UI shows:                             │
+ │   "Send /start ABC12345 to            │
+ │    @your_app_bot"                     │
+ │   [t.me/your_app_bot link]            │
+ │                                       │
+ │ Page polls /api/telegram/status       │
+ │ every 3s                              │
+ └───────────────────────────────────────┘
+                                            ┌─ User taps t.me link ──────┐
+                                            │ Opens Telegram app         │
+                                            │ Sends: /start ABC12345     │
+                                            │  │                         │
+                                            │  ▼                         │
+                                            │ Webhook receives,          │
+                                            │ matches "/start <token>":  │
+                                            │                            │
+                                            │ UPDATE User SET            │
+                                            │   telegramChatId = chat.id,│
+                                            │   telegramLinkToken = NULL │
+                                            │ WHERE                      │
+                                            │   telegramLinkToken = "ABC │
+                                            │   12345" AND not expired   │
+                                            │  │                         │
+                                            │  ▼                         │
+                                            │ Bot replies "Linked!"      │
+                                            └────────────────────────────┘
+ ┌─ web page ────────────────────────────┐
+ │ Status poll sees telegramChatId       │
+ │ populated → flips to ✓ Linked         │
+ └───────────────────────────────────────┘
 ```
 
-## Multi-tenant / B2B SaaS — how does this scale?
+### Steady-state message flow (after linking)
 
-You asked: "Is the Telegram stuff only on a 1-1 basis? How would it sync with the rest of a user's chats if they authenticate through the web app?"
+```
+                   Telegram user sends message
+                                │
+                                ▼
+                POST /api/telegram-webhook
+                (with x-telegram-bot-api-secret-token)
+                                │
+                                ▼
+                  ┌─────────────────────────────────┐
+                  │ 1. timingSafeEqual secret check │
+                  │ 2. Parse update                 │
+                  │ 3. Look up user by chat.id:     │
+                  │    SELECT * FROM "User"         │
+                  │    WHERE telegramChatId =       │
+                  │          message.chat.id        │
+                  │ 4. If not found → reply         │
+                  │    "Link from /admin/telegram"  │
+                  │ 5. Else: after(runAgent(user))  │
+                  │ 6. Return 200                   │
+                  └────────────────┬────────────────┘
+                                   │
+                  (background, up to maxDuration)
+                                   ▼
+                  ┌─────────────────────────────────┐
+                  │ runAgent(user, text):           │
+                  │                                 │
+                  │  composio.create(user.id)       │
+                  │   ↓                             │
+                  │  composioTools                  │
+                  │                                 │
+                  │  supermemoryTools(KEY, {        │
+                  │    containerTags: [user.id]     │
+                  │  })                             │
+                  │   ↓                             │
+                  │  memoryTools                    │
+                  │                                 │
+                  │  generateText({ tools: {...} }) │
+                  │   ↓                             │
+                  │  sendTelegramMessage(           │
+                  │    chat.id, reply)              │
+                  └─────────────────────────────────┘
+```
 
-The honest answer: **as built, yes, it's per-Telegram-chat with no link to web user accounts.**
+### Why this gives cross-channel memory automatically
 
-### Why
-
-In `app/api/telegram-webhook/route.ts`:
+Both the **web chat route** and the **Telegram webhook** call:
 
 ```ts
-const composio = new Composio({ provider: new VercelProvider() });
-const session = await composio.create(chatId); // <-- Telegram chat.id
+supermemoryTools(API_KEY, { containerTags: [user.id] })
 ```
 
-Composio scopes all connections by external user ID. Since we pass the Telegram `chat.id`:
+Same `containerTags` → same memory bucket. The agent's memory tools read/write the same store regardless of which channel it's running in.
 
-- Each Telegram chat = its own Composio user → its own Gmail / Calendar connections.
-- A user logged into the web app at `https://your-app.com` with `User.id = abc-123` is a *different* Composio user than the same human's Telegram chat with `chat.id = 987654321`. They'll be asked to reconnect Gmail in each channel.
+```
+            user.id = abc-123
+                    │
+   ┌────────────────┼────────────────┐
+   ▼                ▼                ▼
+ Web chat      Telegram chat      Cron job
+   │                │                │
+   └────────────────┴────────────────┘
+                    │
+                    ▼
+       containerTags: ["abc-123"]
+                    │
+                    ▼
+              SAME memory.
 
-### What "linking" looks like (homework)
+   "Remember I'm vegan" said in Telegram
+   is recalled when web chat asks
+   "what dietary restrictions do I have?"
+```
 
-To unify identities for B2B / multi-tenant:
+## Multi-tenant story (resolved)
 
-1. **Add a `TelegramLink` table:**
-   ```sql
-   CREATE TABLE "TelegramLink" (
-     "telegramChatId" varchar PRIMARY KEY,
-     "userId"         uuid NOT NULL REFERENCES "User"("id"),
-     "linkedAt"       timestamptz NOT NULL DEFAULT now()
-   );
-   ```
-2. **Add a `/settings` flow on the web app** that generates a one-time link code (e.g. 6 digits) per logged-in user, stored in a short-lived table.
-3. **Special-case `/link <code>` in the webhook handler:** look up the code, insert the `TelegramLink` row, reply "linked".
-4. **In `runAgent`**, replace `composio.create(chatId)` with:
-   ```ts
-   const link = await getTelegramLink(chatId);
-   const composioUserId = link?.userId ?? chatId;  // fall back to chat-only
-   const session = await composio.create(composioUserId);
-   ```
+Earlier versions of this spec called this "homework." The build now does it properly.
 
-After that, `chatId X linked to userId Y` means a Telegram message from chat X uses Y's Gmail connection — same connection the web app uses.
+### Three patterns, ranked
 
-### What about a B2B SaaS with one bot per customer?
-
-Two patterns, pick one:
-
-| Pattern | When to use | How |
+| Pattern | When to use | Code complexity |
 |---|---|---|
-| **One bot, account linking** (recommended) | You own the bot. Customers' employees link their personal Telegram. | `TelegramLink` table as above; one bot in BotFather; works for unlimited tenants. |
-| **One bot per customer** | Each customer organization has its own branded bot. | Each tenant gets a `botToken` row in DB; webhook URL has the tenant ID baked in (`/api/telegram-webhook/<tenantId>`); each tenant runs `setWebhook` with their own token. |
+| **A. One bot, account linking** (what we built) | Standard B2B/B2C SaaS. One bot serves all users. | This spec. ~80 lines. |
+| **B. Per-Telegram-chat (unlinked) fallback** | Don't want a hard error if a stranger DMs the bot. | Reply with "link from /admin/telegram" — already in the webhook. |
+| **C. One bot per customer org** (white-label) | Reseller/agency products. Each tenant has their own bot. | Out of scope. Add `botToken` per-tenant column, route webhook with tenant slug. |
 
-For most B2B AI products, pattern #1 is enough. Pattern #2 only matters if you're white-labeling Telegram bots.
+### What about message history / sidebar sync?
 
-### What about chat history / sidebar sync?
+Currently, Telegram messages don't appear in the web sidebar. To add (~30 lines):
 
-Currently, Telegram messages don't get persisted into your `Chat` / `Message_v2` tables. To unify:
-
-- After agent reply, also INSERT a row into the user's "Telegram" chat in your DB (auto-create the Chat on first Telegram message).
-- The web sidebar then shows a single "📱 Telegram" thread with the same messages.
-- Out of v1 scope but ~30 lines.
+- After each Telegram agent reply, INSERT into the linked user's `Chat` (auto-create one labelled "📱 Telegram" on first message), plus the corresponding `Message_v2` rows.
+- Web sidebar shows the unified conversation.
+- Skipped for this build to keep scope manageable. Pair with `Chat.source` enum if/when added.
 
 ## Core files
 
 | File | Purpose |
 |---|---|
-| `app/api/telegram-webhook/route.ts` | POST handler — secret check, parse, dispatch agent in `after()` |
+| `lib/db/schema.ts` | `user` table gains `telegramChatId`, `telegramLinkToken`, `telegramLinkTokenExpiresAt` |
+| `lib/db/queries.ts` | `createTelegramLinkToken`, `getUserByTelegramChatId`, `getUserByTelegramLinkToken`, `linkTelegramToUser`, `unlinkTelegram`, `getTelegramLinkStatus` |
+| `app/api/telegram/link/route.ts` | POST — auth, generate token, return `{ token, botUsername }` |
+| `app/api/telegram/unlink/route.ts` | POST — auth, clear `telegramChatId` |
+| `app/api/telegram/status/route.ts` | GET — auth, return `{ linked, telegramChatId? }` for poll |
+| `app/api/telegram-webhook/route.ts` | POST handler — secret check, `/start <token>` linking branch, regular message branch (chat.id → user lookup → run agent with user.id-scoped Composio + Supermemory) |
+| `app/admin/telegram/page.tsx` | End-user settings UI (link/unlink) |
+| `app/admin/telegram/link-button.tsx` | Client component for the linking flow |
 | `lib/telegram.ts` | Bot API helpers: `sendTelegramMessage`, `getWebhookInfo`, `setWebhook`, `deleteWebhook`, `getBotInfo` |
-| `app/telegram/page.tsx` | Server component admin: bot info, webhook status, register/delete forms, send test message |
-| `.env.local` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` (any random string) |
+| `app/telegram/page.tsx` | **Developer-only** webhook registration page (used during ngrok dev or first deploy) |
+| `app/(chat)/api/chat/route.ts` | Wires Supermemory tools with `containerTags: [user.id]` to match the Telegram side |
 
 ## Required env vars
 
 | Var | Where it comes from | Purpose |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) → `/newbot` | Authenticates calls to Telegram Bot API |
+| `TELEGRAM_BOT_USERNAME` | Same — BotFather tells you the username (without `@`) | UI shows `t.me/<username>` link to the user |
 | `TELEGRAM_WEBHOOK_SECRET` | You invent it (any random string, ≥32 chars recommended) | Header secret Telegram sends with every delivery — proves the request is from Telegram |
 | `COMPOSIO_API_KEY` | [Composio dashboard](https://app.composio.dev) | Tool integrations |
+| `SUPERMEMORY_API_KEY` | [Supermemory console](https://console.supermemory.ai) | Cross-channel memory (optional but unlocks the killer demo) |
 | `AI_GATEWAY_API_KEY` *(or OIDC)* | Vercel AI Gateway | Model access |
 
 ## Reference docs

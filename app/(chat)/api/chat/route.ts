@@ -45,6 +45,7 @@ import type { DBMessage } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import { Composio } from "@composio/core";
 import { VercelProvider } from "@composio/vercel";
+import { supermemoryTools } from "@supermemory/tools/ai-sdk";
 import { checkIpRateLimit } from "@/lib/ratelimit";
 import type { ChatMessage } from "@/lib/types";
 import { convertToUIMessages, generateUUID } from "@/lib/utils";
@@ -249,6 +250,7 @@ export async function POST(request: Request) {
         };
 
         let composioTools: ToolSet = {};
+        let memoryTools: ToolSet = {};
 
         if (process.env.COMPOSIO_API_KEY && session.user.type !== "guest") {
           try {
@@ -260,9 +262,20 @@ export async function POST(request: Request) {
           }
         }
 
+        if (process.env.SUPERMEMORY_API_KEY && session.user.type !== "guest") {
+          try {
+            memoryTools = supermemoryTools(process.env.SUPERMEMORY_API_KEY, {
+              containerTags: [session.user.id],
+            }) as unknown as ToolSet;
+          } catch (error) {
+            console.error("Supermemory tool initialization failed:", error);
+          }
+        }
+
         const tools = {
           ...localTools,
           ...composioTools,
+          ...memoryTools,
         };
         const result = streamText({
           model: getLanguageModel(chatModel),
