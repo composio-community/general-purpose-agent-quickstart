@@ -8,8 +8,9 @@ import { SessionProvider } from "next-auth/react";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://chat.vercel.ai"),
-  title: "Next.js Chatbot Template",
-  description: "Next.js chatbot template using the AI SDK.",
+  title: "OpenClaw Clone with Composio",
+  description:
+    "AI agent built on the Vercel AI SDK with Composio tools, Supermemory, and Telegram.",
 };
 
 export const viewport = {
