@@ -30,6 +30,8 @@ import {
   type Suggestion,
   stream,
   suggestion,
+  type TelegramTurn,
+  telegramTurn,
   type User,
   user,
   vote,
@@ -851,6 +853,48 @@ function generateLinkToken(): string {
     token += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
   }
   return token;
+}
+
+export async function appendTelegramTurn({
+  telegramChatId,
+  role,
+  content,
+}: {
+  telegramChatId: string;
+  role: "user" | "assistant";
+  content: string;
+}): Promise<void> {
+  try {
+    await db.insert(telegramTurn).values({ telegramChatId, role, content });
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to append telegram turn"
+    );
+  }
+}
+
+export async function getRecentTelegramTurns({
+  telegramChatId,
+  limit = 10,
+}: {
+  telegramChatId: string;
+  limit?: number;
+}): Promise<TelegramTurn[]> {
+  try {
+    const rows = await db
+      .select()
+      .from(telegramTurn)
+      .where(eq(telegramTurn.telegramChatId, telegramChatId))
+      .orderBy(desc(telegramTurn.createdAt))
+      .limit(limit);
+    return rows.reverse();
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to load telegram turns"
+    );
+  }
 }
 
 export async function getStreamIdsByChatId({ chatId }: { chatId: string }) {

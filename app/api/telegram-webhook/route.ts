@@ -8,6 +8,8 @@ import { DEFAULT_CHAT_MODEL } from "@/lib/ai/models";
 import { regularPrompt } from "@/lib/ai/prompts";
 import { getLanguageModel } from "@/lib/ai/providers";
 import {
+  appendTelegramTurn,
+  getRecentTelegramTurns,
   getUserByTelegramChatId,
   linkTelegramByToken,
 } from "@/lib/db/queries";
@@ -146,17 +148,40 @@ async function handleRegularMessage(
       }
     }
 
+    const recentTurns = await getRecentTelegramTurns({
+      telegramChatId: chatId,
+      limit: 10,
+    });
+
+    const history = recentTurns.map((t) => ({
+      role: t.role,
+      content: t.content,
+    })) as { role: "user" | "assistant"; content: string }[];
+
+    await appendTelegramTurn({
+      telegramChatId: chatId,
+      role: "user",
+      content: userMessage,
+    });
+
     const result = await generateText({
       model: getLanguageModel(DEFAULT_CHAT_MODEL),
       system: `${regularPrompt}
 
 You are accessible via Telegram. Replies must fit in a chat message — keep them short (1-3 sentences typical, never more than ~500 chars). No markdown headings, no long lists.`,
-      messages: [{ role: "user", content: userMessage }],
+      messages: [...history, { role: "user", content: userMessage }],
       tools,
       stopWhen: stepCountIs(8),
     });
 
     const reply = result.text.trim() || "Done.";
+
+    await appendTelegramTurn({
+      telegramChatId: chatId,
+      role: "assistant",
+      content: reply,
+    });
+
     await sendTelegramMessage(chatId, reply.slice(0, 4096));
   } catch (err) {
     console.error("[telegram] agent error:", err);

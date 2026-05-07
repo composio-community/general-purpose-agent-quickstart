@@ -142,6 +142,18 @@ export const cronJob = pgTable("CronJob", {
 
 export type CronJob = InferSelectModel<typeof cronJob>;
 
+export const telegramTurn = pgTable("TelegramTurn", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  telegramChatId: varchar("telegramChatId", { length: 64 }).notNull(),
+  role: varchar("role", { enum: ["user", "assistant"] }).notNull(),
+  content: text("content").notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type TelegramTurn = InferSelectModel<typeof telegramTurn>;
+
 export const stream = pgTable(
   "Stream",
   {
