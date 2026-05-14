@@ -65,14 +65,14 @@
 
 **Build order (matches the video):**
 
-| # | Part | What it adds | Spec doc |
-|---|---|---|---|
-| 1 | Chat | Vercel AI SDK chatbot template — chat UI, models, local tools | — |
-| 2 | Hands | Composio tools (Gmail, Slack, Notion, 1000+) | — |
-| 3 | Memory | Supermemory — durable cross-session facts | [`SPEC_AGENT.md`](SPEC_AGENT.md) |
-| 4 | Soul | `User.soul` + conversational onboarding | [`SPEC_AGENT.md`](SPEC_AGENT.md) |
-| 5 | Anywhere | Telegram bot + account linking | [`SPEC_TELEGRAM.md`](SPEC_TELEGRAM.md) |
-| 6 | Heartbeat | Agent-created cron schedules | [`SPEC_CRON.md`](SPEC_CRON.md) |
+| # | Part | What it adds |
+|---|---|---|
+| 1 | Chat | Vercel AI SDK chatbot template — chat UI, models, local tools |
+| 2 | Hands | Composio tools (Gmail, Slack, Notion, 1000+) |
+| 3 | Memory | Supermemory — durable cross-session facts |
+| 4 | Soul | `User.soul` + conversational onboarding |
+| 5 | Anywhere | Telegram bot + account linking |
+| 6 | Heartbeat | Agent-created cron schedules |
 
 Every part is self-contained: the env vars you need, the explanation, and the agent-ready prompts you paste into your AI editor.
 
@@ -183,7 +183,6 @@ The agent has hands but no memory. Tell it your name in one chat, open a new cha
 Add Supermemory as a third tool source in app/(chat)/api/chat/route.ts, alongside the existing local tools and Composio tools.
 
 Context:
-- Reference: SPEC_AGENT.md → "Layer 3: Persistent memory (durable facts)".
 - Use @supermemory/tools/ai-sdk → supermemoryTools(API_KEY, { containerTags: [session.user.id] }).
 - Preserve the existing chatbot route structure.
 - Keep the existing getComposioToolsForUser(session.user.id) helper and existing systemPrompt({ requestHints, supportsTools, hasComposioTools }) flow.
