@@ -191,14 +191,16 @@ Context:
 - Merge into the existing tools object: { ...localTools, ...composioTools, ...memoryTools }.
 - Preserve all existing chat behavior: streaming, title generation, rate limits, tool approval flow, message saving, local tools, and Composio tools.
 
-Also update lib/ai/prompts.ts (regularPrompt):
-- Tell the model to be aggressive with addMemory — even on casual phrasings ("oh btw I'm vegan" → call addMemory).
-- Tell the model to call searchMemories or getProfile BEFORE answering questions about the user.
-- Make the distinction explicit: addMemory = facts about the USER. Do not store the agent's personality, name, or identity in Supermemory.
+Also update lib/ai/prompts.ts (regularPrompt) with operational rules for the memory tools:
+- addMemory: be aggressive, even on casual phrasings ("oh btw I'm vegan" → call addMemory). Canonicalize facts on write — "call me Shawn" / "refer to me as Shawn" / "my name is Shawn" all store as "The user's preferred name is Shawn." Don't store the assistant's identity, instructions, or persona.
+- searchMemories: this is direct semantic search over stored memories. Prefer it for specific recall ("what's my name?", "what did I say about my diet?").
+- getProfile: this returns Supermemory's synthesized profile (static + dynamic buckets) and may include search results when given a query. Prefer it for broad personalization ("what do you know about me?"). If getProfile returns empty buckets, fall back to searchMemories before telling the user you don't know.
+- Always check memory BEFORE answering questions about the user — don't say "I don't know" without calling at least one of these tools first.
 
 Verify:
-- Tell the agent "my name is X" → it calls addMemory.
-- New chat → "what's my name?" → it calls searchMemories and recalls.
+- Tell the agent "refer to me as X" → it calls addMemory and stores "The user's preferred name is X."
+- New chat → "what's my name?" → it calls searchMemories (not just getProfile) and recalls.
+- New chat → "what do you know about me?" → it calls getProfile.
 - Guest user → no memory tools, no errors.
 ````
 
