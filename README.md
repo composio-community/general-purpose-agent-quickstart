@@ -192,10 +192,10 @@ Context:
 - Preserve all existing chat behavior: streaming, title generation, rate limits, tool approval flow, message saving, local tools, and Composio tools.
 
 Also update lib/ai/prompts.ts (regularPrompt) with operational rules for the memory tools:
-- addMemory: store any durable fact worth recalling later — about the user (name, preferences, constraints), about their world (people, projects, companies, decisions), or anything they explicitly ask you to remember. Catch casual phrasings too ("oh btw I'm vegan", "remember that the launch is March 12"). Skip ephemeral context (today's mood, one-off questions). Canonicalize on write — "call me Shawn" / "refer to me as Shawn" / "my name is Shawn" all store as "The user's preferred name is Shawn." Don't store the assistant's identity, instructions, or persona.
-- searchMemories: direct semantic search over stored memories. Prefer it for specific recall ("what's my name?", "when's the launch?", "what did I decide about pricing?").
-- getProfile: returns Supermemory's synthesized profile (static + dynamic buckets) and may include search results when given a query. Prefer it for broad personalization ("what do you know about me?"). If getProfile returns empty buckets, fall back to searchMemories before saying you don't know.
-- Always check memory BEFORE answering questions that could plausibly be in memory — don't say "I don't know" without calling at least one of these tools first.
+- addMemory: store durable facts worth recalling later. Catch casual phrasings, skip ephemeral context. Canonicalize on write. Don't store the assistant's own identity or instructions.
+- searchMemories: semantic search. Use for specific recall.
+- getProfile: synthesized profile buckets. Use for broad personalization; fall back to searchMemories if empty.
+- Check memory before claiming you don't know something.
 
 Verify:
 - Tell the agent "refer to me as X" → it calls addMemory and stores "The user's preferred name is X."
