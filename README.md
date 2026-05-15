@@ -73,6 +73,7 @@
 | 4 | Soul | `User.soul` + conversational onboarding |
 | 5 | Anywhere | Telegram bot + account linking |
 | 6 | Heartbeat | Agent-created cron schedules |
+| 7 | Production | Deploy to Vercel — re-point Telegram, set `CRON_SECRET`, env var checklist |
 
 Every part is self-contained: the env vars you need, the explanation, and the agent-ready prompts you paste into your AI editor.
 
@@ -98,6 +99,10 @@ In Part 2, we plug in Composio so the agent can reach out and actually do things
 4. Paste **🤖 Agent-Ready Prompt 2B** (below) — expands the model list
 5. Prompt your agent and authorize apps when it asks (one-click OAuth)
 6. Verify: logged-in users can connect external apps, guest users get local tools only
+
+> **One month free for viewers of this video.** Composio's free tier covers the entire tutorial and most hobby projects. When you scale past it, redeem `FREECODECAMP` at [composio.dev/pricing](https://composio.dev/pricing) for one free month on the next plan up.
+
+> **Early-stage startup?** Apply to the [Composio Startup Program](https://composio.dev/startups) for three months of unlimited credits + priority support. Mention "FREECODECAMP" in your application.
 
 #### 🤖 Agent-Ready Prompt 2A — Composio + Per-User Auth + Admin
 
@@ -305,15 +310,25 @@ Right now the agent only lives in your browser tab. Telegram lets your users tal
    ```
 5. Restart `pnpm dev`.
 
+At this point the bot exists, but Telegram messages will not work yet. Do **not** test plain `/start` here. The app still needs the Prompt 5 code, a registered webhook, and a `/start <link-token>` generated from `/admin/telegram`.
+
 **Local dev requires public HTTPS** — Telegram won't deliver to `localhost`. Use [ngrok](https://ngrok.com): `ngrok http 3000`. The ngrok URL changes on free-tier restarts, so you'll re-register the webhook from `/telegram` each time.
 
 **Steps:**
 
 1. Paste **🤖 Agent-Ready Prompt 5** below.
 2. Run `pnpm db:generate && pnpm db:migrate`.
-3. Start ngrok → visit `/telegram` → "Register webhook".
-4. As a logged-in user, visit `/admin/telegram` → click "Link Telegram" → tap the `t.me/your_bot` link → send `/start <code>`.
-5. DM the bot from your phone: "fetch my latest emails" → uses the same Gmail OAuth you connected on the web.
+3. Restart `pnpm dev`.
+4. Install/start ngrok:
+   ```bash
+   brew install ngrok
+   ngrok config add-authtoken <your-ngrok-authtoken>
+   ngrok http 3000
+   ```
+5. Copy the ngrok HTTPS URL into `.env.local` as `NEXT_PUBLIC_APP_URL`, then restart `pnpm dev` again.
+6. Visit `/telegram` → "Register webhook".
+7. As a logged-in user, visit `/admin/telegram` → click "Link Telegram" → tap the `t.me/your_bot` link → send `/start <code>` (not plain `/start`).
+8. DM the bot from your phone: "fetch my latest emails" → uses the same Gmail OAuth you connected on the web.
 
 Visual reference:
 
@@ -350,27 +365,32 @@ Install and wire anything missing before building the Telegram route:
    - getWebhookInfo should expose pending_update_count and last_error_message so debugging is obvious.
    - deleteWebhook should support drop_pending_updates for local reset/debug flows.
 
-3. Webhook handler (app/api/telegram-webhook/route.ts)
+3. Public webhook bypass (proxy.ts / middleware.ts)
+   - If the app has middleware/proxy auth guards, explicitly bypass /api/telegram-webhook BEFORE auth redirects or guest-session redirects.
+   - Telegram is not a logged-in browser user. The webhook must receive Telegram's POST directly and return a 2xx response.
+   - A 307/308 redirect breaks Telegram delivery. getWebhookInfo will show "Wrong response from the webhook: 307 Temporary Redirect".
+
+4. Webhook handler (app/api/telegram-webhook/route.ts)
    - Validates x-telegram-bot-api-secret-token via timingSafeEqual against TELEGRAM_WEBHOOK_SECRET.
    - Filters chat.type !== "private" (drop groups).
-   - Special-case "/start <token>": look up User by telegramLinkToken (and not expired), set telegramChatId, clear token, reply "Linked!".
-   - If user sends "/start" with no valid token, reply with instructions to link from /admin/telegram.
+   - Special-case "/start <token>" but still return {ok:true} immediately. Do the token lookup, DB update, and "Linked!" reply inside after() so Telegram does not time out.
+   - If user sends "/start" with no valid token, reply with instructions to link from /admin/telegram, also inside after().
    - Regular messages: dispatch agent in after(), return {ok:true} immediately.
    - Agent dispatch: load user via getUserByTelegramChatId, build Composio tools for that user, build supermemoryTools(SUPERMEMORY_API_KEY, { containerTags: [user.id] }), load last 10 TelegramTurn rows for working memory, generateText (one-shot, NOT streamText), persist both turns, sendTelegramMessage.
    - Use the existing regularPrompt plus a short Telegram brevity rule.
    - Use stopWhen: stepCountIs(8) or similar so Composio meta-tools can search, connect, and execute across multiple tool steps.
 
-4. Linking API
+5. Linking API
    - POST /api/telegram/link: generate 8-char token, set User.telegramLinkToken + 10min expiry, return { token, botUsername, deepLink, expiresInMinutes }.
    - GET /api/telegram/status: returns { linked: boolean, telegramChatId? }.
    - POST /api/telegram/unlink: clears telegramChatId and any link token fields for the current user.
 
-5. /admin/telegram page (end-user)
+6. /admin/telegram page (end-user)
    - "Link Telegram" button → calls POST /link → shows "Send /start ABC12345 to @your_bot" + t.me link.
    - Polls /status every 3s until linked.
    - Unlink button calls POST /unlink.
 
-6. /telegram page (developer debug)
+7. /telegram page (developer debug)
    - Shows getBotInfo + getWebhookInfo.
    - "Register webhook" button (auto-detects host, registers /api/telegram-webhook).
    - "Delete webhook" button.
@@ -379,8 +399,10 @@ Install and wire anything missing before building the Telegram route:
 
 Verify:
 - BotFather token + secret in .env.local, dev server restarted.
-- ngrok running, /telegram shows webhook registered.
-- /admin/telegram → link → DM bot → "fetch my latest emails" uses the same Gmail you OAuthed on web.
+- ngrok running, /telegram shows webhook registered with pending_update_count = 0 and no last_error_message.
+- Direct POST to /api/telegram-webhook with the secret header returns 200, not 307/308.
+- /admin/telegram → link → DM bot with a fresh "/start <code>" (not plain "/start") → page flips to linked.
+- After linked, DM bot → "fetch my latest emails" uses the same Gmail you OAuthed on web.
 - Cross-channel memory: tell Telegram "remember I prefer concise replies" → ask in web chat "what do you know about my style?" → recalls.
 ````
 
@@ -412,16 +434,16 @@ This affects **only the platform tick** (`vercel.json` → `/api/cron/tick`), no
 - **Hobby**: `vercel.json` cron ticks once per day → users *can* create `* * * * *` rows in chat, but the agent only checks for due rows once daily, so the most frequent real-world execution is daily.
 - **Pro**: `vercel.json` cron ticks every minute → user-created `* * * * *` rows actually fire every minute.
 
-For local dev this doesn't matter — `./scripts/test-cron.sh trigger` calls the tick endpoint manually, and the agent runs whatever's due regardless of the platform schedule.
+For local dev (where Vercel Cron does not fire), `/admin/schedules` includes a **Run now** button per row that triggers a single job's tick on demand.
 
 **Steps:**
 
 1. Install: `pnpm add cron-parser`
-2. Paste **🤖 Agent-Ready Prompt 6** below.
-3. Run `pnpm db:generate && pnpm db:migrate`.
-4. In chat: *"Schedule a task that says hello every minute."* (works locally; on deployed Hobby, will only actually fire once per day)
-5. Local test: `./scripts/test-cron.sh list` → `make-due <id>` → `trigger` → check `lastRunAt`.
-6. Visit `/admin/schedules` to see the schedule + last output.
+2. `openssl rand -hex 32` → add to `.env.local` as `CRON_SECRET=...`.
+3. Paste **🤖 Agent-Ready Prompt 6** below.
+4. Run `pnpm db:generate && pnpm db:migrate`.
+5. In chat: *"Schedule a daily task at 9 AM that says hello."*
+6. Visit `/admin/schedules` → click **Run now** on the new row → confirm `lastRunAt` and `lastOutput` populate.
 
 #### 🤖 Agent-Ready Prompt 6 — Agent-managed cron schedules
 
@@ -453,38 +475,115 @@ This feature requires Composio and Supermemory in the scheduled run. If Composio
    - Wire all three into localTools in app/(chat)/api/chat/route.ts. Block guest users; only regular signed-in users can create schedules.
 
 5. Tick route (app/api/cron/tick/route.ts, GET)
-   - Auth: require Authorization: Bearer ${CRON_SECRET} in production. Bypass when NODE_ENV !== "production" so test script works.
+   - Auth: require Authorization: Bearer ${CRON_SECRET} in production. Bypass in development so local manual triggers work.
    - Select due rows (nextRunAt <= NOW() AND enabled).
    - For each due row: build Composio tools for row.userId, build supermemoryTools(SUPERMEMORY_API_KEY, { containerTags: [row.userId] }), then generateText with row.prompt + tools.
    - Reuse the project's existing Composio helper if one exists, so the chat route and cron route do not drift.
    - Update lastRunAt, lastOutput (final text), lastError (if thrown), nextRunAt (computeNextRunAt).
+   - Extract the per-job execution into a runCronJob(jobId) helper so the manual trigger endpoint can reuse it.
 
 6. Schedules API
    - GET /api/schedules → user's schedules.
    - DELETE /api/schedules/:id → guarded WHERE id = $1 AND userId = session.user.id.
+   - POST /api/schedules/:id/run → guarded by session.user.id, calls runCronJob(jobId) immediately, ignores nextRunAt. Returns the updated row so the UI can refresh lastOutput. This is what the "Run now" button hits — no CRON_SECRET needed because the request is authenticated by the user session.
 
 7. /admin/schedules page
    - Server component lists schedules.
-   - Delete button (client subcomponent calls DELETE).
-   - Collapsible "Last output" panel.
+   - Per-row buttons (client subcomponent):
+     - **Run now** → POST /api/schedules/:id/run, then refresh.
+     - **Delete** → DELETE /api/schedules/:id, then refresh.
+   - Collapsible "Last output" panel showing lastRunAt, lastOutput, lastError.
 
 8. vercel.json
    - Default to Hobby-compatible: { "crons": [{ "path": "/api/cron/tick", "schedule": "0 0 * * *" }] } (daily at midnight UTC).
    - Hobby plans REJECT sub-daily expressions at deploy time (https://vercel.com/docs/cron-jobs/usage-and-pricing). If on Pro, change to "* * * * *" for per-minute ticks.
    - Hobby precision is hourly ±59 min — "0 1 * * *" fires somewhere in the 1 AM hour, not exactly at 1:00.
 
-9. scripts/test-cron.sh
-   - Subcommands: list, make-due <id> [offset], trigger, status <id>, delete <id>.
-   - Used to test locally since Vercel crons don't fire on pnpm dev.
-   - Requires POSTGRES_URL in .env.local and psql installed locally. jq is optional but useful for formatted output.
-
 Verify:
-- In chat: "schedule hello every minute" → row inserted, no validation errors.
-- ./scripts/test-cron.sh list → shows row.
-- make-due <id> → trigger → lastRunAt populated, lastOutput non-null.
-- /admin/schedules → row visible, delete works.
+- In chat: "schedule a daily task at 9 AM that says hello" → row inserted, no validation errors.
+- /admin/schedules → row visible.
+- Click **Run now** → lastRunAt populated, lastOutput non-null.
+- Delete works.
 - Guest users blocked from creating schedules.
 ````
+
+---
+
+### Part 7: Deploying to Production
+
+Production deployment checklist. Each item is a single action; notes call out the non-obvious behavior.
+
+**Deploy**
+
+- [ ] `vercel deploy --prod`
+  - Migrations apply automatically — `package.json` build runs `tsx lib/db/migrate && next build`.
+
+**Set production env vars** ([Vercel docs](https://vercel.com/docs/projects/environment-variables))
+
+In **Project → Settings → Environment Variables → Production**:
+
+- [ ] `AUTH_SECRET` — required for Auth.js. Rotating invalidates all sessions.
+- [ ] `POSTGRES_URL` — production Neon database.
+- [ ] `COMPOSIO_API_KEY` — same key as dev.
+- [ ] `SUPERMEMORY_API_KEY` — same key as dev. `containerTags: [user.id]` preserves user isolation across environments.
+- [ ] `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET` — same values as dev. One bot serves all environments.
+- [ ] `NEXT_PUBLIC_APP_URL` — production domain (e.g. `https://your-app.vercel.app`). Not a preview URL.
+- [ ] `CRON_SECRET` — required for Part 6. Vercel auto-sends `Authorization: Bearer ${CRON_SECRET}` on cron calls.
+- [ ] `AI_GATEWAY_API_KEY` — only required for non-Vercel deploys (auto via OIDC on Vercel).
+- [ ] `REDIS_URL` *(optional)* — resumable streams + production rate limiting.
+
+**Telegram**
+
+- [ ] Visit `https://<prod-domain>/telegram` and click **Register webhook**.
+- [ ] Confirm `pending_update_count = 0` and `last_error_message` is empty.
+- [ ] DM the bot → it responds using the same Composio connections from the web app.
+
+Notes:
+- Webhook registration lives on Telegram's servers and persists across deploys. Re-register only when `NEXT_PUBLIC_APP_URL` changes.
+- Webhook must point at the production URL. Preview URLs return 401 because Vercel Deployment Protection is on for previews by default.
+- Telegram supports ports 443/80/88/8443 only. Vercel uses 443.
+- A custom domain (`agent.example.com`) is more stable than `*.vercel.app` and survives project renames.
+
+**Vercel Cron**
+
+- [ ] `vercel.json` has a Hobby-compatible schedule (≥ daily) or you're on Pro.
+- [ ] `CRON_SECRET` is set in production env vars.
+- [ ] After the next scheduled tick, `/admin/schedules` shows updated `lastRunAt`.
+
+Notes:
+- Crons only fire on production deployments. Preview deploys never trigger crons. `scripts/test-cron.sh` exists for local testing.
+- Sub-daily expressions in `vercel.json` fail deployment on Hobby ([usage and pricing](https://vercel.com/docs/cron-jobs/usage-and-pricing)).
+- `maxDuration` defaults to 300s (Hobby), up to 800s (Pro). Set `export const maxDuration = 60` on `app/api/cron/tick/route.ts` if agent runs are slow or many jobs are due ([function limits](https://vercel.com/docs/functions/limitations)).
+- New deploys do not require re-registering — Vercel re-registers crons from `vercel.json` automatically.
+
+**Auth.js**
+
+- [ ] `AUTH_SECRET` set in production.
+- No `AUTH_URL` / `NEXTAUTH_URL` needed on Vercel — Auth.js v5 [auto-detects](https://authjs.dev/getting-started/deployment) the host.
+
+**Composio** *(optional production polish)*
+
+- [ ] *Optional:* register your own OAuth app per toolkit in their developer portals.
+- [ ] *Optional:* set redirect URI to `https://backend.composio.dev/api/v3.1/toolkits/auth/callback`.
+- [ ] *Optional:* create a custom auth config in the Composio dashboard or via [`auth_configs.create`](https://v3.docs.composio.dev/docs/programmatic-auth-configs).
+
+Notes:
+- Managed credentials keep working until then. This step is for branded OAuth consent screens, higher rate limits, and custom scopes ([docs](https://docs.composio.dev/docs/custom-app-vs-managed-app)).
+
+**Vercel Deployment Protection**
+
+- [ ] Confirm Standard Protection is **off** for production.
+
+Notes:
+- Standard Protection on production blocks Telegram (401) and Vercel cron (401).
+- If you must keep it on, use [Protection Bypass for Automation](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation) and forward the bypass header from the webhook and cron routes.
+
+**Final verify**
+
+- [ ] Sign in on production.
+- [ ] `/admin` shows Composio connections.
+- [ ] DM bot from Telegram → uses the same Gmail OAuth as web.
+- [ ] `/admin/schedules` shows scheduled jobs; `lastRunAt` updates after a tick.
 
 ---
 
