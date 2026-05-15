@@ -25,6 +25,43 @@ export type ChatModel = {
 
 export const chatModels: ChatModel[] = [
   {
+    id: "openai/gpt-5.5",
+    name: "GPT 5.5",
+    provider: "openai",
+    description: "Latest OpenAI flagship model with tools and vision",
+    gatewayOrder: ["openai", "azure"],
+    reasoningEffort: "low",
+  },
+  {
+    id: "anthropic/claude-opus-4.7",
+    name: "Claude Opus 4.7",
+    provider: "anthropic",
+    description: "Anthropic flagship reasoning model with tools and vision",
+    gatewayOrder: ["anthropic", "bedrock", "vertexAnthropic"],
+  },
+  {
+    id: "google/gemini-3.1-flash-lite",
+    name: "Gemini 3.1 Flash Lite",
+    provider: "google",
+    description: "Fast Gemini model with tools, vision, and low latency",
+    gatewayOrder: ["google", "vertex"],
+  },
+  {
+    id: "xai/grok-4.3",
+    name: "Grok 4.3",
+    provider: "xai",
+    description: "Latest Grok model with tools and vision",
+    gatewayOrder: ["xai"],
+  },
+  {
+    id: "openai/gpt-5.5-pro",
+    name: "GPT 5.5 Pro",
+    provider: "openai",
+    description: "OpenAI high-capability model for complex reasoning",
+    gatewayOrder: ["openai"],
+    reasoningEffort: "medium",
+  },
+  {
     id: "deepseek/deepseek-v3.2",
     name: "DeepSeek V3.2",
     provider: "deepseek",

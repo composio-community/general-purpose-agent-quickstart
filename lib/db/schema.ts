@@ -1,4 +1,4 @@
-import type { InferSelectModel } from "drizzle-orm";
+import type { InferInsertModel, InferSelectModel } from "drizzle-orm";
 import {
   boolean,
   foreignKey,
@@ -16,6 +16,12 @@ export const user = pgTable("User", {
   email: varchar("email", { length: 64 }).notNull(),
   password: varchar("password", { length: 64 }),
   name: text("name"),
+  soul: text("soul"),
+  telegramChatId: varchar("telegramChatId", { length: 64 }).unique(),
+  telegramLinkToken: varchar("telegramLinkToken", { length: 16 }).unique(),
+  telegramLinkTokenExpiresAt: timestamp("telegramLinkTokenExpiresAt", {
+    withTimezone: true,
+  }),
   emailVerified: boolean("emailVerified").notNull().default(false),
   image: text("image"),
   isAnonymous: boolean("isAnonymous").notNull().default(false),
@@ -24,6 +30,40 @@ export const user = pgTable("User", {
 });
 
 export type User = InferSelectModel<typeof user>;
+
+export const telegramTurn = pgTable("TelegramTurn", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  telegramChatId: varchar("telegramChatId", { length: 64 }).notNull(),
+  role: varchar("role", { enum: ["user", "assistant"] }).notNull(),
+  content: text("content").notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type TelegramTurn = InferSelectModel<typeof telegramTurn>;
+export type TelegramTurnInsert = InferInsertModel<typeof telegramTurn>;
+
+export const cronJob = pgTable("CronJob", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  userId: uuid("userId")
+    .notNull()
+    .references(() => user.id),
+  cronExpression: varchar("cronExpression", { length: 64 }).notNull(),
+  timezone: varchar("timezone", { length: 64 }).notNull().default("UTC"),
+  prompt: text("prompt").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  nextRunAt: timestamp("nextRunAt", { withTimezone: true }).notNull(),
+  lastRunAt: timestamp("lastRunAt", { withTimezone: true }),
+  lastError: text("lastError"),
+  lastOutput: text("lastOutput"),
+  createdAt: timestamp("createdAt", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type CronJob = InferSelectModel<typeof cronJob>;
+export type CronJobInsert = InferInsertModel<typeof cronJob>;
 
 export const chat = pgTable("Chat", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),

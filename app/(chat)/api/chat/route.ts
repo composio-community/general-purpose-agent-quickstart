@@ -11,6 +11,7 @@ import { checkBotId } from "botid/server";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
 import { auth, type UserType } from "@/app/(auth)/auth";
+import { getComposioToolsForUser, sanitizeToolCallId } from "@/lib/ai/composio";
 import { entitlementsByUserType } from "@/lib/ai/entitlements";
 import {
   allowedModelIds,
@@ -20,10 +21,15 @@ import {
 } from "@/lib/ai/models";
 import { type RequestHints, systemPrompt } from "@/lib/ai/prompts";
 import { getLanguageModel } from "@/lib/ai/providers";
+import { getSupermemoryToolsForUser } from "@/lib/ai/supermemory";
+import { cancelSchedule } from "@/lib/ai/tools/cancel-schedule";
 import { createDocument } from "@/lib/ai/tools/create-document";
 import { editDocument } from "@/lib/ai/tools/edit-document";
 import { getWeather } from "@/lib/ai/tools/get-weather";
+import { listMySchedules } from "@/lib/ai/tools/list-my-schedules";
 import { requestSuggestions } from "@/lib/ai/tools/request-suggestions";
+import { scheduleTask } from "@/lib/ai/tools/schedule-task";
+import { setSoul } from "@/lib/ai/tools/set-soul";
 import { updateDocument } from "@/lib/ai/tools/update-document";
 import { isProductionEnvironment } from "@/lib/constants";
 import {
@@ -32,6 +38,7 @@ import {
   getChatById,
   getMessageCountByUserId,
   getMessagesByChatId,
+  getUserSoul,
   saveChat,
   saveMessages,
   updateChatTitleById,
@@ -87,6 +94,8 @@ export async function POST(request: Request) {
     await checkIpRateLimit(ipAddress(request));
 
     const userType: UserType = session.user.type;
+    const soul = await getUserSoul({ userId: session.user.id });
+    const needsOnboarding = !soul && userType !== "guest";
 
     const messageCount = await getMessageCountByUserId({
       id: session.user.id,
@@ -186,26 +195,80 @@ export async function POST(request: Request) {
     const isReasoningModel = capabilities?.reasoning === true;
     const supportsTools = capabilities?.tools === true;
 
-    const modelMessages = await convertToModelMessages(uiMessages);
+    const sanitizedUiMessages = uiMessages.map((m) => ({
+      ...m,
+      parts: m.parts.map((part) => {
+        if (
+          "toolCallId" in part &&
+          typeof part.toolCallId === "string" &&
+          part.toolCallId.length > 0
+        ) {
+          return { ...part, toolCallId: sanitizeToolCallId(part.toolCallId) };
+        }
+        return part;
+      }),
+    })) as ChatMessage[];
+
+    const modelMessages = await convertToModelMessages(sanitizedUiMessages);
+
+    const composioTools =
+      supportsTools && userType === "regular"
+        ? await getComposioToolsForUser(session.user.id)
+        : {};
+    const memoryTools =
+      supportsTools && process.env.SUPERMEMORY_API_KEY && userType === "regular"
+        ? await getSupermemoryToolsForUser(session.user.id)
+        : {};
+    const hasComposioTools = Object.keys(composioTools).length > 0;
+    const hasMemoryTools = Object.keys(memoryTools).length > 0;
 
     const stream = createUIMessageStream({
       originalMessages: isToolApprovalFlow ? uiMessages : undefined,
       execute: async ({ writer: dataStream }) => {
+        const localTools = {
+          getWeather,
+          ...(userType === "guest"
+            ? {}
+            : {
+                setSoul: setSoul({ userId: session.user.id }),
+                scheduleTask: scheduleTask({ userId: session.user.id }),
+                listMySchedules: listMySchedules({ userId: session.user.id }),
+                cancelSchedule: cancelSchedule({ userId: session.user.id }),
+              }),
+          createDocument: createDocument({
+            session,
+            dataStream,
+            modelId: chatModel,
+          }),
+          editDocument: editDocument({ dataStream, session }),
+          updateDocument: updateDocument({
+            session,
+            dataStream,
+            modelId: chatModel,
+          }),
+          requestSuggestions: requestSuggestions({
+            session,
+            dataStream,
+            modelId: chatModel,
+          }),
+        };
+
         const result = streamText({
           model: getLanguageModel(chatModel),
-          system: systemPrompt({ requestHints, supportsTools }),
+          system: systemPrompt({
+            requestHints,
+            supportsTools,
+            hasComposioTools,
+            hasMemoryTools,
+            hasScheduleTools: userType === "regular",
+            soul,
+            needsOnboarding,
+          }),
           messages: modelMessages,
           stopWhen: stepCountIs(5),
-          experimental_activeTools:
-            isReasoningModel && !supportsTools
-              ? []
-              : [
-                  "getWeather",
-                  "createDocument",
-                  "editDocument",
-                  "updateDocument",
-                  "requestSuggestions",
-                ],
+          ...(isReasoningModel && !supportsTools
+            ? { experimental_activeTools: [] as never }
+            : {}),
           providerOptions: {
             ...(modelConfig?.gatewayOrder && {
               gateway: { order: modelConfig.gatewayOrder },
@@ -215,23 +278,9 @@ export async function POST(request: Request) {
             }),
           },
           tools: {
-            getWeather,
-            createDocument: createDocument({
-              session,
-              dataStream,
-              modelId: chatModel,
-            }),
-            editDocument: editDocument({ dataStream, session }),
-            updateDocument: updateDocument({
-              session,
-              dataStream,
-              modelId: chatModel,
-            }),
-            requestSuggestions: requestSuggestions({
-              session,
-              dataStream,
-              modelId: chatModel,
-            }),
+            ...localTools,
+            ...composioTools,
+            ...memoryTools,
           },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,

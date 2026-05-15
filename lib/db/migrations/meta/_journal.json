@@ -8,6 +8,27 @@
       "when": 1710000000000,
       "tag": "0000_initial",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778750738800,
+      "tag": "0001_lush_maginty",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778765115885,
+      "tag": "0002_lying_sunfire",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1778839261652,
+      "tag": "0003_cooing_chameleon",
+      "breakpoints": true
     }
   ]
 }

@@ -85,6 +85,14 @@ export function SidebarUserNav({ user }: { user: User }) {
             >
               {`Toggle ${resolvedTheme === "light" ? "dark" : "light"} mode`}
             </DropdownMenuItem>
+            {isGuest ? null : (
+              <DropdownMenuItem
+                className="cursor-pointer text-[13px]"
+                onSelect={() => router.push("/admin/schedules")}
+              >
+                Schedules
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild data-testid="user-nav-item-auth">
               <button

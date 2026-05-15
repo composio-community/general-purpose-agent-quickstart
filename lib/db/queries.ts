@@ -10,6 +10,7 @@ import {
   gte,
   inArray,
   lt,
+  lte,
   type SQL,
 } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -20,13 +21,19 @@ import { ChatbotError } from "../errors";
 import { generateUUID } from "../utils";
 import {
   type Chat,
+  type CronJob,
+  type CronJobInsert,
   chat,
+  cronJob,
   type DBMessage,
   document,
   message,
   type Suggestion,
   stream,
   suggestion,
+  type TelegramTurn,
+  type TelegramTurnInsert,
+  telegramTurn,
   type User,
   user,
   vote,
@@ -71,6 +78,369 @@ export async function createGuestUser() {
       "bad_request:database",
       "Failed to create guest user"
     );
+  }
+}
+
+export async function getUserSoul({ userId }: { userId: string }) {
+  try {
+    const [selectedUser] = await db
+      .select({ soul: user.soul })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1);
+
+    return selectedUser?.soul ?? null;
+  } catch (_error) {
+    throw new ChatbotError("bad_request:database", "Failed to get user soul");
+  }
+}
+
+export async function updateUserSoul({
+  userId,
+  soul,
+}: {
+  userId: string;
+  soul: string | null;
+}) {
+  try {
+    const normalizedSoul = soul?.trim() || null;
+
+    const [updatedUser] = await db
+      .update(user)
+      .set({ soul: normalizedSoul, updatedAt: new Date() })
+      .where(eq(user.id, userId))
+      .returning({ soul: user.soul });
+
+    return updatedUser?.soul ?? null;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to update user soul"
+    );
+  }
+}
+
+export async function getUserByTelegramChatId({
+  telegramChatId,
+}: {
+  telegramChatId: string;
+}): Promise<User | null> {
+  try {
+    const [selectedUser] = await db
+      .select()
+      .from(user)
+      .where(eq(user.telegramChatId, telegramChatId))
+      .limit(1);
+
+    return selectedUser ?? null;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get user by Telegram chat id"
+    );
+  }
+}
+
+export async function getTelegramStatusForUser({ userId }: { userId: string }) {
+  try {
+    const [selectedUser] = await db
+      .select({ telegramChatId: user.telegramChatId })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1);
+
+    return {
+      linked: Boolean(selectedUser?.telegramChatId),
+      telegramChatId: selectedUser?.telegramChatId ?? undefined,
+    };
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get Telegram link status"
+    );
+  }
+}
+
+export async function createTelegramLinkToken({
+  userId,
+  token,
+  expiresAt,
+}: {
+  userId: string;
+  token: string;
+  expiresAt: Date;
+}) {
+  try {
+    const [updatedUser] = await db
+      .update(user)
+      .set({
+        telegramLinkToken: token,
+        telegramLinkTokenExpiresAt: expiresAt,
+        updatedAt: new Date(),
+      })
+      .where(eq(user.id, userId))
+      .returning({
+        telegramLinkToken: user.telegramLinkToken,
+        telegramLinkTokenExpiresAt: user.telegramLinkTokenExpiresAt,
+      });
+
+    return updatedUser;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to create Telegram link token"
+    );
+  }
+}
+
+export async function linkTelegramChatByToken({
+  token,
+  telegramChatId,
+}: {
+  token: string;
+  telegramChatId: string;
+}): Promise<User | null> {
+  try {
+    return await db.transaction(async (tx) => {
+      const [selectedUser] = await tx
+        .select({ id: user.id })
+        .from(user)
+        .where(
+          and(
+            eq(user.telegramLinkToken, token),
+            gt(user.telegramLinkTokenExpiresAt, new Date())
+          )
+        )
+        .limit(1);
+
+      if (!selectedUser) {
+        return null;
+      }
+
+      await tx
+        .update(user)
+        .set({ telegramChatId: null, updatedAt: new Date() })
+        .where(eq(user.telegramChatId, telegramChatId));
+
+      const [linkedUser] = await tx
+        .update(user)
+        .set({
+          telegramChatId,
+          telegramLinkToken: null,
+          telegramLinkTokenExpiresAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(user.id, selectedUser.id))
+        .returning();
+
+      return linkedUser ?? null;
+    });
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to link Telegram chat"
+    );
+  }
+}
+
+export async function unlinkTelegramForUser({ userId }: { userId: string }) {
+  try {
+    const [updatedUser] = await db
+      .update(user)
+      .set({
+        telegramChatId: null,
+        telegramLinkToken: null,
+        telegramLinkTokenExpiresAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(user.id, userId))
+      .returning({ telegramChatId: user.telegramChatId });
+
+    return updatedUser;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to unlink Telegram chat"
+    );
+  }
+}
+
+export async function getTelegramTurnsByChatId({
+  telegramChatId,
+  limit,
+}: {
+  telegramChatId: string;
+  limit: number;
+}): Promise<TelegramTurn[]> {
+  try {
+    const turns = await db
+      .select()
+      .from(telegramTurn)
+      .where(eq(telegramTurn.telegramChatId, telegramChatId))
+      .orderBy(desc(telegramTurn.createdAt))
+      .limit(limit);
+
+    return turns.reverse();
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get Telegram turns"
+    );
+  }
+}
+
+export async function saveTelegramTurns({
+  turns,
+}: {
+  turns: TelegramTurnInsert[];
+}) {
+  try {
+    if (turns.length === 0) {
+      return null;
+    }
+
+    return await db.insert(telegramTurn).values(turns);
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to save Telegram turns"
+    );
+  }
+}
+
+export async function createCronJob({
+  userId,
+  cronExpression,
+  timezone,
+  prompt,
+  nextRunAt,
+}: {
+  userId: string;
+  cronExpression: string;
+  timezone: string;
+  prompt: string;
+  nextRunAt: Date;
+}): Promise<CronJob> {
+  try {
+    const [createdJob] = await db
+      .insert(cronJob)
+      .values({
+        userId,
+        cronExpression,
+        timezone,
+        prompt,
+        nextRunAt,
+      })
+      .returning();
+
+    return createdJob;
+  } catch (_error) {
+    throw new ChatbotError("bad_request:database", "Failed to create cron job");
+  }
+}
+
+export async function getDueCronJobs(): Promise<CronJob[]> {
+  try {
+    return await db
+      .select()
+      .from(cronJob)
+      .where(and(eq(cronJob.enabled, true), lte(cronJob.nextRunAt, new Date())))
+      .orderBy(asc(cronJob.nextRunAt));
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get due cron jobs"
+    );
+  }
+}
+
+export async function getCronJobById({
+  id,
+}: {
+  id: string;
+}): Promise<CronJob | null> {
+  try {
+    const [selectedJob] = await db
+      .select()
+      .from(cronJob)
+      .where(eq(cronJob.id, id))
+      .limit(1);
+
+    return selectedJob ?? null;
+  } catch (_error) {
+    throw new ChatbotError("bad_request:database", "Failed to get cron job");
+  }
+}
+
+export async function updateCronJobAfterRun({
+  id,
+  lastRunAt,
+  lastError,
+  lastOutput,
+  nextRunAt,
+}: {
+  id: string;
+  lastRunAt: Date;
+  lastError: string | null;
+  lastOutput: string | null;
+  nextRunAt: Date;
+}): Promise<CronJob | null> {
+  try {
+    const [updatedJob] = await db
+      .update(cronJob)
+      .set({
+        lastRunAt,
+        lastError,
+        lastOutput,
+        nextRunAt,
+      } satisfies Partial<CronJobInsert>)
+      .where(eq(cronJob.id, id))
+      .returning();
+
+    return updatedJob ?? null;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to update cron job after run"
+    );
+  }
+}
+
+export async function getCronJobsByUserId({
+  userId,
+}: {
+  userId: string;
+}): Promise<CronJob[]> {
+  try {
+    return await db
+      .select()
+      .from(cronJob)
+      .where(eq(cronJob.userId, userId))
+      .orderBy(asc(cronJob.nextRunAt));
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get cron jobs by user id"
+    );
+  }
+}
+
+export async function deleteCronJob({
+  id,
+  userId,
+}: {
+  id: string;
+  userId: string;
+}): Promise<CronJob | null> {
+  try {
+    const [deletedJob] = await db
+      .delete(cronJob)
+      .where(and(eq(cronJob.id, id), eq(cronJob.userId, userId)))
+      .returning();
+
+    return deletedJob ?? null;
+  } catch (_error) {
+    throw new ChatbotError("bad_request:database", "Failed to delete cron job");
   }
 }
 
