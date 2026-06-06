@@ -2,6 +2,7 @@
 
 import type { UIMessage } from "ai";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
+import type { LinkSafetyConfig, LinkSafetyModalProps } from "streamdown";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -19,7 +20,14 @@ import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  ExternalLinkIcon,
+  XIcon,
+} from "lucide-react";
 import {
   createContext,
   memo,
@@ -29,6 +37,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { Streamdown } from "streamdown";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
@@ -322,6 +331,127 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
 const streamdownPlugins = { cjk, code, math, mermaid };
 
+const LinkSafetyModal = ({
+  isOpen,
+  onClose,
+  onConfirm,
+  url,
+}: LinkSafetyModalProps) => {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isOpen, onClose]);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  }, [url]);
+
+  const handleConfirm = useCallback(() => {
+    onConfirm();
+    onClose();
+  }, [onClose, onConfirm]);
+
+  if (!isOpen || typeof document === "undefined") {
+    return null;
+  }
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/50 backdrop-blur-sm"
+      data-streamdown="link-safety-modal"
+      onClick={onClose}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          onClose();
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      <div
+        className="relative mx-4 flex w-full max-w-md flex-col gap-4 rounded-xl border bg-background p-6 shadow-lg"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+        role="presentation"
+      >
+        <button
+          className="absolute right-4 top-4 rounded-md p-1 text-muted-foreground transition-all hover:bg-muted hover:text-foreground"
+          onClick={onClose}
+          title="Close"
+          type="button"
+        >
+          <XIcon size={16} />
+        </button>
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2 font-semibold text-lg">
+            <ExternalLinkIcon size={20} />
+            <span>Open external link?</span>
+          </div>
+          <p className="text-muted-foreground text-sm">
+            You&apos;re about to visit an external website.
+          </p>
+        </div>
+        <div
+          className={cn(
+            "break-all rounded-md bg-muted p-3 font-mono text-sm",
+            url.length > 100 && "max-h-32 overflow-y-auto"
+          )}
+        >
+          {url}
+        </div>
+        <div className="flex gap-2">
+          <button
+            className="flex flex-1 items-center justify-center gap-2 rounded-md border bg-background px-4 py-2 font-medium text-sm transition-all hover:bg-muted"
+            onClick={handleCopy}
+            type="button"
+          >
+            {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+            <span>{copied ? "Copied" : "Copy link"}</span>
+          </button>
+          <button
+            className="flex flex-1 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground text-sm transition-all hover:bg-primary/90"
+            onClick={handleConfirm}
+            type="button"
+          >
+            <ExternalLinkIcon size={14} />
+            <span>Open link</span>
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+};
+
+const streamdownLinkSafety: LinkSafetyConfig = {
+  enabled: true,
+  renderModal: (props) => <LinkSafetyModal {...props} />,
+};
+
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
@@ -329,6 +459,7 @@ export const MessageResponse = memo(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         className
       )}
+      linkSafety={streamdownLinkSafety}
       plugins={streamdownPlugins}
       {...props}
     />

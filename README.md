@@ -488,6 +488,7 @@ Scheduled runs should execute the saved prompt as the schedule owner, with that 
 
 7. /admin/schedules page
    - Server component lists schedules.
+   - Add a "My schedules" item to the signed-in user menu in the sidebar/account control, near Toggle dark mode and Sign out, linking to /admin/schedules.
    - Per-row buttons (client subcomponent):
      - **Run now** → POST /api/schedules/:id/run, then refresh.
      - **Delete** → DELETE /api/schedules/:id, then refresh.
@@ -510,79 +511,48 @@ Verify:
 
 ### Part 7: Deploying to Production
 
-Production deployment checklist. Each item is a single action; notes call out the non-obvious behavior.
+This should be boring. The code stays the same; production just needs the right environment variables and a fresh Telegram webhook URL.
 
-**Deploy**
+1. Deploy the app.
 
-- [ ] `vercel deploy --prod`
-  - Migrations apply automatically — `package.json` build runs `tsx lib/db/migrate && next build`.
+   ```bash
+   vercel deploy --prod
+   ```
 
-**Set production env vars** ([Vercel docs](https://vercel.com/docs/projects/environment-variables))
+   Migrations run during the build via `tsx lib/db/migrate && next build`.
 
-In **Project → Settings → Environment Variables → Production**:
+2. In Vercel, open **Project → Settings → Environment Variables → Production** and set:
 
-- [ ] `AUTH_SECRET` — required for Auth.js. Rotating invalidates all sessions.
-- [ ] `POSTGRES_URL` — production Neon database.
-- [ ] `COMPOSIO_API_KEY` — same key as dev.
-- [ ] `SUPERMEMORY_API_KEY` — same key as dev. `containerTags: [user.id]` preserves user isolation across environments.
-- [ ] `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET` — same values as dev. One bot serves all environments.
-- [ ] `NEXT_PUBLIC_APP_URL` — production domain (e.g. `https://your-app.vercel.app`). Not a preview URL.
-- [ ] `CRON_SECRET` — required for Part 6. Vercel auto-sends `Authorization: Bearer ${CRON_SECRET}` on cron calls.
-- [ ] `AI_GATEWAY_API_KEY` — only required for non-Vercel deploys (auto via OIDC on Vercel).
-- [ ] `REDIS_URL` *(optional)* — resumable streams + production rate limiting.
+   - `AUTH_SECRET`
+   - `POSTGRES_URL`
+   - `COMPOSIO_API_KEY`
+   - `SUPERMEMORY_API_KEY`
+   - `TELEGRAM_BOT_TOKEN`
+   - `TELEGRAM_BOT_USERNAME`
+   - `TELEGRAM_WEBHOOK_SECRET`
+   - `NEXT_PUBLIC_APP_URL=https://your-app.vercel.app`
+   - `CRON_SECRET`
 
-**Telegram**
+   See the env var cheatsheet below for where each value comes from.
 
-- [ ] Visit `https://<prod-domain>/telegram` and click **Register webhook**.
-- [ ] Confirm `pending_update_count = 0` and `last_error_message` is empty.
-- [ ] DM the bot → it responds using the same Composio connections from the web app.
+3. Re-register Telegram against production.
 
-Notes:
-- Webhook registration lives on Telegram's servers and persists across deploys. Re-register only when `NEXT_PUBLIC_APP_URL` changes.
-- Webhook must point at the production URL. Preview URLs return 401 because Vercel Deployment Protection is on for previews by default.
-- Telegram supports ports 443/80/88/8443 only. Vercel uses 443.
-- A custom domain (`agent.example.com`) is more stable than `*.vercel.app` and survives project renames.
+   Visit `https://<prod-domain>/telegram`, click **Register webhook**, then confirm `pending_update_count = 0` and `last_error_message` is empty.
 
-**Vercel Cron**
+   Do not use a preview URL. Telegram needs the production URL because preview deployments are protected and will return 401.
 
-- [ ] `vercel.json` has a Hobby-compatible schedule (≥ daily) or you're on Pro.
-- [ ] `CRON_SECRET` is set in production env vars.
-- [ ] After the next scheduled tick, `/admin/schedules` shows updated `lastRunAt`.
+4. Check cron.
 
-Notes:
-- Crons only fire on production deployments. Preview deploys never trigger crons. `scripts/test-cron.sh` exists for local testing.
-- Sub-daily expressions in `vercel.json` fail deployment on Hobby ([usage and pricing](https://vercel.com/docs/cron-jobs/usage-and-pricing)).
-- `maxDuration` defaults to 300s (Hobby), up to 800s (Pro). Set `export const maxDuration = 60` on `app/api/cron/tick/route.ts` if agent runs are slow or many jobs are due ([function limits](https://vercel.com/docs/functions/limitations)).
-- New deploys do not require re-registering — Vercel re-registers crons from `vercel.json` automatically.
+   `vercel.json` should point at `/api/cron/tick`, and `CRON_SECRET` must be set in production. Vercel Cron only fires on production deploys. On Hobby, keep the schedule daily; Pro can run per-minute.
 
-**Auth.js**
+5. Final smoke test.
 
-- [ ] `AUTH_SECRET` set in production.
-- No `AUTH_URL` / `NEXTAUTH_URL` needed on Vercel — Auth.js v5 [auto-detects](https://authjs.dev/getting-started/deployment) the host.
+   - Sign in on the production URL.
+   - `/admin` shows Composio connections.
+   - DM the Telegram bot.
+   - `/admin/schedules` shows jobs, and `lastRunAt` updates after a tick.
 
-**Composio** *(optional production polish)*
-
-- [ ] *Optional:* register your own OAuth app per toolkit in their developer portals.
-- [ ] *Optional:* set redirect URI to `https://backend.composio.dev/api/v3.1/toolkits/auth/callback`.
-- [ ] *Optional:* create a custom auth config in the Composio dashboard or via [`auth_configs.create`](https://v3.docs.composio.dev/docs/programmatic-auth-configs).
-
-Notes:
-- Managed credentials keep working until then. This step is for branded OAuth consent screens, higher rate limits, and custom scopes ([docs](https://docs.composio.dev/docs/custom-app-vs-managed-app)).
-
-**Vercel Deployment Protection**
-
-- [ ] Confirm Standard Protection is **off** for production.
-
-Notes:
-- Standard Protection on production blocks Telegram (401) and Vercel cron (401).
-- If you must keep it on, use [Protection Bypass for Automation](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation) and forward the bypass header from the webhook and cron routes.
-
-**Final verify**
-
-- [ ] Sign in on production.
-- [ ] `/admin` shows Composio connections.
-- [ ] DM bot from Telegram → uses the same Gmail OAuth as web.
-- [ ] `/admin/schedules` shows scheduled jobs; `lastRunAt` updates after a tick.
+If production Deployment Protection is turned on, Telegram and cron can both get blocked with 401s. Leave it off unless you are also setting up an automation bypass.
 
 ---
 
