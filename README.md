@@ -75,7 +75,7 @@
 | 6 | Heartbeat | Agent-created cron schedules |
 | 7 | Production | Deploy to Vercel — re-point Telegram, set `CRON_SECRET`, env var checklist |
 
-Every part is self-contained: the env vars you need, the explanation, and the agent-ready prompts you paste into your AI editor.
+Each part is self-contained: the env vars you need, the explanation, and the agent-ready prompts you paste into your AI editor.
 
 ### Part 1: Setup Vercel AI SDK Template
 
